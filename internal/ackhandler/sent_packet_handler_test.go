@@ -2097,3 +2097,38 @@ func benchmarkSendAndAcknowledge(b *testing.B, ackEvery, inFlight int) {
 		}
 	}
 }
+
+// A path that reorders a burst gets more packets declared lost than fit a small tracker.
+// Once they all turn out to be spurious losses, the congestion window is restored.
+func TestSentPacketHandlerSpuriousLossOfBurst(t *testing.T) {
+	for _, n := range []int{10, 100, 1000} {
+		t.Run(fmt.Sprintf("%d packets", n), func(t *testing.T) {
+			connStats := &utils.ConnectionStats{}
+			sph := NewSentPacketHandler(0, 1200, utils.NewRTTStats(), connStats, true, false, nil, protocol.PerspectiveClient, nil, utils.DefaultLogger)
+
+			var packets packetTracker
+			start := monotime.Now()
+			now := start
+			var pns []protocol.PacketNumber
+			for range n + 10 {
+				pn := sph.PopPacketNumber(protocol.PacketNumberSpaceAppData)
+				sph.SentPacket(now, pn, protocol.InvalidPacketNumber, nil, []Frame{packets.NewPingFrame(pn)}, protocol.Encryption1RTT, protocol.ECNNon, 1000, false, false)
+				pns = append(pns, pn)
+				now = now.Add(time.Millisecond)
+			}
+			window := connStats.CongestionWindow.Load()
+
+			// the first n packets are overtaken by the last 10
+			now = start.Add(100 * time.Millisecond)
+			_, err := sph.ReceivedAck(&wire.AckFrame{AckRanges: ackRanges(pns[n:]...)}, protocol.Encryption1RTT, now)
+			require.NoError(t, err)
+			require.Len(t, packets.Lost, n)
+			require.Less(t, connStats.CongestionWindow.Load(), window)
+
+			now = now.Add(2 * time.Millisecond)
+			_, err = sph.ReceivedAck(&wire.AckFrame{AckRanges: ackRanges(pns...)}, protocol.Encryption1RTT, now)
+			require.NoError(t, err)
+			require.Equal(t, window, connStats.CongestionWindow.Load())
+		})
+	}
+}
