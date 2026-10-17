@@ -1,3 +1,15 @@
+> **nfltr fork.** This is [nfltr](https://nfltr.xyz)'s fork of
+> [quic-go/quic-go](https://github.com/quic-go/quic-go) (MIT, see
+> [LICENSE](LICENSE)); upstream is the project to use unless you need these
+> fixes. It exists because [nfltr/link](https://github.com/nfltr/link)'s
+> `peerlink/quiclink` runs agent sessions over QUIC and needs fixes in the
+> transport (congestion control and stream-reset behaviour) faster than an
+> upstream release can carry them. The fork tracks upstream `master`; our
+> changes are kept small, upstreamable where possible, and live on the
+> `nfltr` branch under the module path `github.com/nfltr/quic-go`, tagged
+> `vX.Y.Z-nfltr.N` (see its commits for the list). Everything below is
+> upstream's README.
+
 <div align="center" style="margin-bottom: 15px;">
   <img src="./assets/quic-go-logo.png" width="700" height="auto">
 </div>
