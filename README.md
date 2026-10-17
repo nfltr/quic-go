@@ -4,6 +4,13 @@
 
 # A QUIC implementation in pure Go
 
+> **This is nfltr's fork** (module `github.com/nfltr/quic-go`), for
+> `github.com/nfltr/link/peerlink/quiclink`. Branch `nfltr` is upstream
+> `4b404ee15e68` plus fixes, each its own commit with its test, to be
+> offered upstream: `SetReliableBoundary` after a reset no longer panics
+> (`numOutStandingFrames negative`); HyStart leaves slow start only while
+> the sender is congestion window limited. `master` mirrors upstream.
+
 
 [![Documentation](https://img.shields.io/badge/docs-quic--go.net-red?style=flat)](https://quic-go.net/docs/)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/quic-go/quic-go)](https://pkg.go.dev/github.com/quic-go/quic-go)

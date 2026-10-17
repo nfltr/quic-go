@@ -4,8 +4,8 @@ import (
 	"iter"
 	"slices"
 
-	"github.com/quic-go/quic-go/internal/monotime"
-	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/nfltr/quic-go/internal/monotime"
+	"github.com/nfltr/quic-go/internal/protocol"
 )
 
 const maxTrackedLostPackets = 64

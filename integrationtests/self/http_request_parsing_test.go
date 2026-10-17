@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
+	"github.com/nfltr/quic-go"
+	"github.com/nfltr/quic-go/http3"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
