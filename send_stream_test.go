@@ -1969,14 +1969,17 @@ func (*countingStreamSender) recordStreamPriorityUpdated(protocol.StreamID, int8
 func (s *countingStreamSender) onStreamCompleted(protocol.StreamID)                     { s.completed.Add(1) }
 
 // Both sides of a stream abort toward each other: the peer's STOP_SENDING
-// races the application's SetReliableBoundary and CancelWrite. Whatever the
+// races the application's SetReliableBoundary and CancelWrite (and, with 0-RTT,
+// the peer's transport parameters enabling RESET_STREAM_AT). Whatever the
 // order, the stream completes once its frames are acknowledged, and no frame
 // is counted twice.
 func TestSendStreamResetStreamAtStopSendingRace(t *testing.T) {
 	const streamID protocol.StreamID = 1337
 	for i := range 10000 {
 		sender := &countingStreamSender{}
-		str := newSendStream(context.Background(), streamID, sender, newTestStreamFlowControllerWithSendWindow(streamID, protocol.MaxByteCount), true)
+		// Without support, it is enabled concurrently (0-RTT).
+		supported := mrand.IntN(2) == 0
+		str := newSendStream(context.Background(), streamID, sender, newTestStreamFlowControllerWithSendWindow(streamID, protocol.MaxByteCount), supported)
 		_, err := str.Write(make([]byte, 1+mrand.IntN(1000)))
 		require.NoError(t, err)
 		var inFlight []ackhandler.StreamFrame
@@ -1994,7 +1997,17 @@ func TestSendStreamResetStreamAtStopSendingRace(t *testing.T) {
 				runtime.Gosched()
 			}
 			str.handleStopSendingFrame(&wire.StopSendingFrame{StreamID: streamID, ErrorCode: 42})
-			close(done)
+			done <- struct{}{}
+		}()
+		go func() {
+			<-start
+			if !supported {
+				for range mrand.IntN(5) {
+					runtime.Gosched()
+				}
+				str.enableResetStreamAt()
+			}
+			done <- struct{}{}
 		}()
 		close(start)
 		for range mrand.IntN(3) {
@@ -2002,6 +2015,7 @@ func TestSendStreamResetStreamAtStopSendingRace(t *testing.T) {
 		}
 		str.SetReliableBoundary()
 		str.CancelWrite(1234)
+		<-done
 		<-done
 
 		var controlFrames []ackhandler.Frame
@@ -2043,4 +2057,37 @@ func TestSendStreamResetStreamAtStopSendingRace(t *testing.T) {
 		}
 		require.Equal(t, int32(1), sender.completed.Load(), "iteration %d", i)
 	}
+}
+
+// The peer's support for RESET_STREAM_AT can be enabled after a stream was reset (0-RTT).
+// The reset forgot the frames in flight: their acknowledgments must not be counted.
+func TestSendStreamResetStreamAtEnabledAfterReset(t *testing.T) {
+	const streamID protocol.StreamID = 1337
+	mockCtrl := gomock.NewController(t)
+	mockFC := newTestStreamFlowControllerWithSendWindow(42, protocol.MaxByteCount)
+	mockSender := NewMockStreamSender(mockCtrl)
+	str := newSendStream(context.Background(), streamID, mockSender, mockFC, false)
+
+	mockSender.EXPECT().onHasStreamData(streamID, str)
+	_, err := str.Write(make([]byte, 100))
+	require.NoError(t, err)
+	f1, _, _ := str.popStreamFrame(50, protocol.Version1)
+	require.NotNil(t, f1.Frame)
+	f2, _, _ := str.popStreamFrame(protocol.MaxByteCount, protocol.Version1)
+	require.NotNil(t, f2.Frame)
+
+	str.SetReliableBoundary()
+	mockSender.EXPECT().onHasStreamControlFrame(streamID, str)
+	str.CancelWrite(1234)
+	str.enableResetStreamAt()
+
+	cf, ok, _ := str.getControlFrame(monotime.Now())
+	require.True(t, ok)
+	require.Equal(t, &wire.ResetStreamFrame{StreamID: streamID, FinalSize: 100, ErrorCode: 1234, ReliableSize: 0}, cf.Frame)
+	f1.Handler.OnAcked(f1.Frame)
+	f2.Handler.OnLost(f2.Frame)
+	retransmission, _ := str.popRetransmissionFrame(protocol.MaxByteCount, protocol.Version1)
+	require.Nil(t, retransmission.Frame)
+	mockSender.EXPECT().onStreamCompleted(streamID)
+	cf.Handler.OnAcked(cf.Frame)
 }

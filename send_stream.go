@@ -45,6 +45,7 @@ type SendStream struct {
 	// This requires the peer to support RESET_STREAM_AT.
 	// This value should not be accessed directly, but only through the reliableOffset method.
 	// This method returns 0 if the peer doesn't support the RESET_STREAM_AT extension.
+	// Once the write side is reset, it is fixed.
 	reliableSize protocol.ByteCount
 	writeOffset  protocol.ByteCount
 
@@ -616,8 +617,7 @@ func (s *SendStream) SetReliableBoundary() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	// The reset forgot the frames beyond the reliable size (all of them, if it was 0).
-	// Raising the reliable size now would count their acknowledgments again.
+	// see reliableOffset
 	if s.resetErr != nil {
 		return
 	}
@@ -668,10 +668,12 @@ func (s *SendStream) CancelWrite(errorCode StreamErrorCode) {
 		}
 		return
 	}
+	reliableOffset := s.reliableOffset()
+	// From now on, reliableOffset returns the reliable size as it is at the reset.
+	s.reliableSize = reliableOffset
 	s.resetErr = &StreamError{StreamID: s.streamID, ErrorCode: errorCode, Remote: false}
 	s.ctxCancel(s.resetErr)
 
-	reliableOffset := s.reliableOffset()
 	finalSize := max(s.writeOffset, reliableOffset)
 	if s.nextFrameReserved && s.nextFrame != nil {
 		finalSize = max(finalSize, s.nextFrame.Offset+s.nextFrame.DataLen())
@@ -793,6 +795,12 @@ func (s *SendStream) getControlFrame(monotime.Time) (_ ackhandler.Frame, ok, has
 }
 
 func (s *SendStream) reliableOffset() protocol.ByteCount {
+	// The reliable size is fixed once the write side is reset: the reset forgot the frames
+	// beyond it (all of them, if it was 0), and the RESET_STREAM(_AT) frame carries it.
+	// If it changed, the acknowledgments of forgotten frames would be counted again.
+	if s.resetErr != nil {
+		return s.reliableSize
+	}
 	if !s.supportsResetStreamAt {
 		return 0
 	}
