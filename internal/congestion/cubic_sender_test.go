@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go/internal/monotime"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/nfltr/quic-go/internal/monotime"
+	"github.com/nfltr/quic-go/internal/protocol"
+	"github.com/nfltr/quic-go/internal/utils"
 
 	"github.com/stretchr/testify/require"
 )
@@ -71,7 +71,7 @@ func (s *testCubicSender) SendAvailableSendWindowLen(packetLength protocol.ByteC
 
 func (s *testCubicSender) AckNPackets(n int) {
 	s.rttStats.UpdateRTT(60*time.Millisecond, 0)
-	s.sender.MaybeExitSlowStart()
+	s.sender.MaybeExitSlowStart(s.bytesInFlight)
 	for range n {
 		s.ackedPacketNumber++
 		s.sender.OnPacketAcked(s.ackedPacketNumber, maxDatagramSize, s.bytesInFlight, s.clock.Now())
@@ -193,6 +193,49 @@ func TestCubicSenderExponentialSlowStart(t *testing.T) {
 	cwnd := sender.sender.GetCongestionWindow()
 	require.Equal(t, defaultWindowTCP+maxDatagramSize*2*numberOfAcks, cwnd)
 	require.Equal(t, BandwidthFromDelta(cwnd, sender.rttStats.SmoothedRTT()), sender.sender.BandwidthEstimate())
+}
+
+// A sender that is not using its congestion window doesn't leave slow start
+// when its RTT grows: it didn't build the queue that delays its packets
+// (e.g. it sends only ACKs and flow control updates, while the peer sends a burst).
+func TestCubicSenderHybridSlowStartOnlyWhenCwndLimited(t *testing.T) {
+	sender := newTestCubicSender(false)
+	ack := func(rtt time.Duration) {
+		sender.rttStats.UpdateRTT(rtt, 0)
+		sender.sender.MaybeExitSlowStart(sender.bytesInFlight)
+		sender.ackedPacketNumber++
+		sender.sender.OnPacketAcked(sender.ackedPacketNumber, maxDatagramSize, sender.bytesInFlight, sender.clock.Now())
+		sender.bytesInFlight -= maxDatagramSize
+		sender.clock.Advance(time.Millisecond)
+	}
+
+	// grow the window past HyStart's low window, at a steady RTT
+	for sender.sender.GetCongestionWindow() < 2*hybridStartLowWindow*maxDatagramSize {
+		sender.SendAvailableSendWindow()
+		ack(60 * time.Millisecond)
+	}
+	for sender.bytesInFlight > 0 {
+		ack(60 * time.Millisecond)
+	}
+	require.True(t, sender.sender.InSlowStart())
+	cwnd := sender.sender.GetCongestionWindow()
+
+	// application limited: one packet in flight at a time, sampling a queue it didn't build
+	for range 100 {
+		sender.sender.OnPacketSent(sender.clock.Now(), sender.bytesInFlight, sender.packetNumber, maxDatagramSize, true)
+		sender.packetNumber++
+		sender.bytesInFlight += maxDatagramSize
+		ack(200 * time.Millisecond)
+	}
+	require.True(t, sender.sender.InSlowStart())
+	require.Equal(t, cwnd, sender.sender.GetCongestionWindow())
+
+	// using the window, with the same RTT samples: HyStart leaves slow start
+	for range 100 {
+		sender.SendAvailableSendWindow()
+		ack(200 * time.Millisecond)
+	}
+	require.False(t, sender.sender.InSlowStart())
 }
 
 func TestCubicSenderSlowStartPacketLoss(t *testing.T) {
@@ -595,7 +638,7 @@ func TestCubicSenderSlowStartsUpToMaximumCongestionWindow(t *testing.T) {
 	)
 
 	for i := 1; i < protocol.MaxCongestionWindowPackets; i++ {
-		sender.MaybeExitSlowStart()
+		sender.MaybeExitSlowStart(sender.GetCongestionWindow())
 		sender.OnPacketAcked(protocol.PacketNumber(i), 1350, sender.GetCongestionWindow(), clock.Now())
 	}
 	require.Equal(t, initialMaxCongestionWindow, sender.GetCongestionWindow())

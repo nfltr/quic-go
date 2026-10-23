@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/quic-go/quic-go/quicvarint"
+	"github.com/nfltr/quic-go/quicvarint"
 
 	"github.com/stretchr/testify/require"
 )

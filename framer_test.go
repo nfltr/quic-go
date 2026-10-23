@@ -6,10 +6,10 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"github.com/quic-go/quic-go/internal/ackhandler"
-	"github.com/quic-go/quic-go/internal/monotime"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/wire"
+	"github.com/nfltr/quic-go/internal/ackhandler"
+	"github.com/nfltr/quic-go/internal/monotime"
+	"github.com/nfltr/quic-go/internal/protocol"
+	"github.com/nfltr/quic-go/internal/wire"
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"

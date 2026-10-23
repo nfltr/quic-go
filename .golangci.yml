@@ -51,7 +51,7 @@ linters:
           files:
             - '**/http3/**'
           deny:
-            - pkg: 'github.com/quic-go/quic-go/internal'
+            - pkg: 'github.com/nfltr/quic-go/internal'
               desc: 'no dependency on quic-go/internal'
     misspell:
       ignore-rules:
