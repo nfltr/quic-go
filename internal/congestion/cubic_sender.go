@@ -1,11 +1,11 @@
 package congestion
 
 import (
-	"github.com/quic-go/quic-go/internal/monotime"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/utils"
-	"github.com/quic-go/quic-go/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
+	"github.com/nfltr/quic-go/internal/monotime"
+	"github.com/nfltr/quic-go/internal/protocol"
+	"github.com/nfltr/quic-go/internal/utils"
+	"github.com/nfltr/quic-go/qlog"
+	"github.com/nfltr/quic-go/qlogwriter"
 )
 
 const (
@@ -192,7 +192,15 @@ func (c *cubicSender) GetCongestionWindow() protocol.ByteCount {
 	return c.congestionWindow
 }
 
-func (c *cubicSender) MaybeExitSlowStart() {
+// MaybeExitSlowStart runs HyStart on a new RTT sample.
+// A sender that is not using its congestion window cannot have built the queue that
+// delays its packets: its RTT samples may grow with a queue others built (e.g. behind
+// the peer's own data, on the return path). It leaves slow start only while it is
+// congestion window limited, as it only grows its window then.
+func (c *cubicSender) MaybeExitSlowStart(priorInFlight protocol.ByteCount) {
+	if !c.isCwndLimited(priorInFlight) {
+		return
+	}
 	if c.InSlowStart() &&
 		c.hybridSlowStart.ShouldExitSlowStart(c.rttStats.LatestRTT(), c.rttStats.MinRTT(), c.GetCongestionWindow()/c.maxDatagramSize) {
 		// exit slow start

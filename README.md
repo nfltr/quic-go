@@ -4,6 +4,19 @@
 
 # A QUIC implementation in pure Go
 
+> **This is nfltr's fork** (module `github.com/nfltr/quic-go`), for
+> `github.com/nfltr/link/peerlink/quiclink`. Branch `nfltr` is upstream
+> `4b404ee15e68` plus fixes, each its own commit with its test, to be
+> offered upstream: the send stream's reliable size is fixed once its
+> write side is reset, so aborting a stream after the peer's STOP_SENDING
+> no longer panics (`numOutStandingFrames negative`); HyStart leaves slow
+> start only while the sender is congestion window limited; a late ACK
+> restores the congestion window also after a reordered burst of more than
+> 64 packets; a send that fails because the path is briefly gone
+> (ENETUNREACH, EHOSTUNREACH, EADDRNOTAVAIL, ENETDOWN: a NAT rebinding, a
+> host changing networks) is a lost packet, not a closed connection, so the
+> connection migrates once the path is back. `master` mirrors upstream.
+
 
 [![Documentation](https://img.shields.io/badge/docs-quic--go.net-red?style=flat)](https://quic-go.net/docs/)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/quic-go/quic-go)](https://pkg.go.dev/github.com/quic-go/quic-go)

@@ -8,15 +8,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go/internal/mocks"
-	"github.com/quic-go/quic-go/internal/monotime"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/qerr"
-	"github.com/quic-go/quic-go/internal/utils"
-	"github.com/quic-go/quic-go/internal/wire"
-	"github.com/quic-go/quic-go/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
-	"github.com/quic-go/quic-go/testutils/events"
+	"github.com/nfltr/quic-go/internal/mocks"
+	"github.com/nfltr/quic-go/internal/monotime"
+	"github.com/nfltr/quic-go/internal/protocol"
+	"github.com/nfltr/quic-go/internal/qerr"
+	"github.com/nfltr/quic-go/internal/utils"
+	"github.com/nfltr/quic-go/internal/wire"
+	"github.com/nfltr/quic-go/qlog"
+	"github.com/nfltr/quic-go/qlogwriter"
+	"github.com/nfltr/quic-go/testutils/events"
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -1358,7 +1358,7 @@ func TestSentPacketHandlerCongestion(t *testing.T) {
 	// to the congestion controller.
 	ackTime := sendTimes[3].Add(time.Second)
 	gomock.InOrder(
-		cong.EXPECT().MaybeExitSlowStart(),
+		cong.EXPECT().MaybeExitSlowStart(protocol.ByteCount(5000)),
 		cong.EXPECT().OnCongestionEvent(pns[0], protocol.ByteCount(1000), protocol.ByteCount(5000)),
 		cong.EXPECT().OnPacketAcked(pns[2], protocol.ByteCount(1000), protocol.ByteCount(5000), ackTime),
 		cong.EXPECT().OnPacketAcked(pns[3], protocol.ByteCount(1000), protocol.ByteCount(5000), ackTime),
@@ -1497,7 +1497,7 @@ func TestSentPacketHandlerECN(t *testing.T) {
 	cong := mocks.NewMockSendAlgorithmWithDebugInfos(mockCtrl)
 	cong.EXPECT().OnPacketSent(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
 	cong.EXPECT().OnPacketAcked(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
-	cong.EXPECT().MaybeExitSlowStart().AnyTimes()
+	cong.EXPECT().MaybeExitSlowStart(gomock.Any()).AnyTimes()
 	ecnHandler := NewMockECNHandler(mockCtrl)
 	sph := NewSentPacketHandler(
 		0,
@@ -2095,5 +2095,40 @@ func benchmarkSendAndAcknowledge(b *testing.B, ackEvery, inFlight int) {
 			pns = append(pns[:0], pns[ackEvery:]...)
 			ranges = ranges[:0]
 		}
+	}
+}
+
+// A path that reorders a burst gets more packets declared lost than fit a small tracker.
+// Once they all turn out to be spurious losses, the congestion window is restored.
+func TestSentPacketHandlerSpuriousLossOfBurst(t *testing.T) {
+	for _, n := range []int{10, 100, 1000} {
+		t.Run(fmt.Sprintf("%d packets", n), func(t *testing.T) {
+			connStats := &utils.ConnectionStats{}
+			sph := NewSentPacketHandler(0, 1200, utils.NewRTTStats(), connStats, true, false, nil, protocol.PerspectiveClient, nil, utils.DefaultLogger)
+
+			var packets packetTracker
+			start := monotime.Now()
+			now := start
+			var pns []protocol.PacketNumber
+			for range n + 10 {
+				pn := sph.PopPacketNumber(protocol.PacketNumberSpaceAppData)
+				sph.SentPacket(now, pn, protocol.InvalidPacketNumber, nil, []Frame{packets.NewPingFrame(pn)}, protocol.Encryption1RTT, protocol.ECNNon, 1000, false, false)
+				pns = append(pns, pn)
+				now = now.Add(time.Millisecond)
+			}
+			window := connStats.CongestionWindow.Load()
+
+			// the first n packets are overtaken by the last 10
+			now = start.Add(100 * time.Millisecond)
+			_, err := sph.ReceivedAck(&wire.AckFrame{AckRanges: ackRanges(pns[n:]...)}, protocol.Encryption1RTT, now)
+			require.NoError(t, err)
+			require.Len(t, packets.Lost, n)
+			require.Less(t, connStats.CongestionWindow.Load(), window)
+
+			now = now.Add(2 * time.Millisecond)
+			_, err = sph.ReceivedAck(&wire.AckFrame{AckRanges: ackRanges(pns...)}, protocol.Encryption1RTT, now)
+			require.NoError(t, err)
+			require.Equal(t, window, connStats.CongestionWindow.Load())
+		})
 	}
 }

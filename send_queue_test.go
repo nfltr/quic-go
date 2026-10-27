@@ -3,11 +3,13 @@ package quic
 import (
 	"net"
 	"net/netip"
+	"os"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
 
-	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/nfltr/quic-go/internal/protocol"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -189,6 +191,43 @@ func TestSendQueueWriteError(t *testing.T) {
 			t.Fatal("Send should have returned")
 		}
 	})
+}
+
+// A path that is briefly gone (the host's address or route changes: Wi-Fi to
+// cellular, a NAT rebinding, a container moved to another network) fails
+// sendmsg with ENETUNREACH, EHOSTUNREACH, EADDRNOTAVAIL or ENETDOWN. That is
+// a lost packet, not a dead connection: the queue keeps running, loss
+// recovery retransmits once the path is back, and the idle timeout ends a
+// connection whose path never returns. Before, the first such error destroyed
+// the connection (found by nfltr's network-faults harness, nat-rebind).
+func TestSendQueueWriteErrorPathGone(t *testing.T) {
+	for _, errno := range []syscall.Errno{syscall.ENETUNREACH, syscall.EHOSTUNREACH, syscall.EADDRNOTAVAIL, syscall.ENETDOWN} {
+		t.Run(errno.Error(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				mockCtrl := gomock.NewController(t)
+				c := NewMockSendConn(mockCtrl)
+				q := newSendQueue(c)
+
+				written := make(chan struct{})
+				gomock.InOrder(
+					c.EXPECT().Write([]byte("foobar"), gomock.Any(), gomock.Any()).Return(&net.OpError{Op: "write", Net: "udp", Err: os.NewSyscallError("sendmsg", errno)}),
+					c.EXPECT().Write([]byte("raboof"), gomock.Any(), gomock.Any()).Do(func([]byte, uint16, protocol.ECN) error { close(written); return nil }),
+				)
+				errChan := make(chan error, 1)
+				go func() { errChan <- q.Run() }()
+				q.Send(getPacketWithContents([]byte("foobar")), 6, protocol.ECNNon)
+				q.Send(getPacketWithContents([]byte("raboof")), 6, protocol.ECNNon)
+				synctest.Wait()
+				select {
+				case err := <-errChan:
+					t.Fatalf("Run returned %v; want it to keep sending", err)
+				case <-written:
+				}
+				q.Close()
+				require.NoError(t, <-errChan)
+			})
+		})
+	}
 }
 
 func TestSendQueueSendProbe(t *testing.T) {

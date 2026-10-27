@@ -1,9 +1,10 @@
 package quic
 
 import (
+	"errors"
 	"net"
 
-	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/nfltr/quic-go/internal/protocol"
 )
 
 type sender interface {
@@ -92,7 +93,8 @@ func (h *sendQueue) Run() error {
 				// 1. Checking for "datagram too large" message from the kernel, as such,
 				// 2. Path MTU discovery,and
 				// 3. Eventual detection of loss PingFrame.
-				if !isSendMsgSizeErr(err) {
+				// A path that is briefly gone (isSendPathErr) is packet loss too.
+				if !isSendMsgSizeErr(err) && !isSendPathErr(err) {
 					return err
 				}
 			}
@@ -109,4 +111,18 @@ func (h *sendQueue) Close() {
 	close(h.closeCalled)
 	// wait until the run loop returned
 	<-h.runStopped
+}
+
+// isSendPathErr reports a send that failed because the path is gone for now
+// (the host's address or route changed: a NAT rebinding, Wi-Fi to cellular,
+// an interface going down). The packet is lost; loss recovery resends it once
+// the path is back (from a new address the peer validates), and the idle
+// timeout ends the connection if it never is.
+func isSendPathErr(err error) bool {
+	for _, e := range sendPathErrs {
+		if errors.Is(err, e) {
+			return true
+		}
+	}
+	return false
 }

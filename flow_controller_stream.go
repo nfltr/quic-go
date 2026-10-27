@@ -3,10 +3,10 @@ package quic
 import (
 	"fmt"
 
-	"github.com/quic-go/quic-go/internal/monotime"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/qerr"
-	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/nfltr/quic-go/internal/monotime"
+	"github.com/nfltr/quic-go/internal/protocol"
+	"github.com/nfltr/quic-go/internal/qerr"
+	"github.com/nfltr/quic-go/internal/utils"
 )
 
 type streamFlowController struct {

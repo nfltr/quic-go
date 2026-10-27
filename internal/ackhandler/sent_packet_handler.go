@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/quic-go/quic-go/internal/congestion"
-	"github.com/quic-go/quic-go/internal/monotime"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/qerr"
-	"github.com/quic-go/quic-go/internal/utils"
-	"github.com/quic-go/quic-go/internal/wire"
-	"github.com/quic-go/quic-go/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
+	"github.com/nfltr/quic-go/internal/congestion"
+	"github.com/nfltr/quic-go/internal/monotime"
+	"github.com/nfltr/quic-go/internal/protocol"
+	"github.com/nfltr/quic-go/internal/qerr"
+	"github.com/nfltr/quic-go/internal/utils"
+	"github.com/nfltr/quic-go/internal/wire"
+	"github.com/nfltr/quic-go/qlog"
+	"github.com/nfltr/quic-go/qlogwriter"
 )
 
 const (
@@ -468,7 +468,7 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 				}
 				h.largestAckedTime = p.SendTime
 			}
-			h.congestion.MaybeExitSlowStart()
+			h.congestion.MaybeExitSlowStart(priorInFlight)
 		}
 	}
 
@@ -557,43 +557,30 @@ func (h *sentPacketHandler) detectSpuriousLosses(ack *wire.AckFrame, ackTime mon
 	var maxPacketReordering protocol.PacketNumber
 	var maxTimeReordering time.Duration
 	var packetThresholdChanged bool
-	ackRangeIdx := len(ack.AckRanges) - 1
 	var spuriousLosses []protocol.PacketNumber
-	for pn, sendTime := range h.lostPackets.All() {
-		ackRange := ack.AckRanges[ackRangeIdx]
-		for pn > ackRange.Largest && ackRangeIdx > 0 {
-			ackRangeIdx--
-			ackRange = ack.AckRanges[ackRangeIdx]
+	for pn, sendTime := range h.lostPackets.Acked(ack.AckRanges) {
+		if !h.packetThresholdDisabled {
+			h.packetThresholdDisabled = true
+			packetThresholdChanged = true
 		}
-		if pn < ackRange.Smallest {
-			continue
+		packetReordering := h.hist.Difference(ack.LargestAcked(), pn)
+		timeReordering := ackTime.Sub(sendTime)
+		maxPacketReordering = max(maxPacketReordering, packetReordering)
+		if h.minPNToRelaxReordering != protocol.InvalidPacketNumber && pn >= h.minPNToRelaxReordering {
+			maxTimeReordering = max(maxTimeReordering, timeReordering)
 		}
-		if pn <= ackRange.Largest {
-			if !h.packetThresholdDisabled {
-				h.packetThresholdDisabled = true
-				packetThresholdChanged = true
-			}
-			packetReordering := h.hist.Difference(ack.LargestAcked(), pn)
-			timeReordering := ackTime.Sub(sendTime)
-			maxPacketReordering = max(maxPacketReordering, packetReordering)
-			if h.minPNToRelaxReordering != protocol.InvalidPacketNumber && pn >= h.minPNToRelaxReordering {
-				maxTimeReordering = max(maxTimeReordering, timeReordering)
-			}
 
-			if h.qlogger != nil {
-				h.qlogger.RecordEvent(qlog.SpuriousLoss{
-					EncryptionLevel:  protocol.Encryption1RTT,
-					PacketNumber:     pn,
-					PacketReordering: uint64(packetReordering),
-					TimeReordering:   timeReordering,
-				})
-			}
-			spuriousLosses = append(spuriousLosses, pn)
+		if h.qlogger != nil {
+			h.qlogger.RecordEvent(qlog.SpuriousLoss{
+				EncryptionLevel:  protocol.Encryption1RTT,
+				PacketNumber:     pn,
+				PacketReordering: uint64(packetReordering),
+				TimeReordering:   timeReordering,
+			})
 		}
+		spuriousLosses = append(spuriousLosses, pn)
 	}
-	for _, pn := range spuriousLosses {
-		h.lostPackets.Delete(pn)
-	}
+	h.lostPackets.DeleteAll(spuriousLosses)
 	lossDelay := max(
 		max(h.rttStats.LatestRTT(), h.rttStats.SmoothedRTT())*time.Duration(8+h.timeThresholdEighths)/8,
 		protocol.TimerGranularity,
