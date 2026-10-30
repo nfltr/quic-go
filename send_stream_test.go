@@ -936,6 +936,24 @@ func TestSendStreamUpdateSendWindow(t *testing.T) {
 	str.updateSendWindow(123)
 }
 
+func TestSendStreamSendWindowCallback(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	mockSender := NewMockStreamSender(mockCtrl)
+	str := newSendStream(context.Background(), 42, mockSender, newTestStreamFlowControllerWithSendWindow(42, 100), false)
+
+	var got []int64
+	str.SetSendWindowCallback(func(n int64) { got = append(got, n) })
+	str.updateSendWindow(150)
+	str.updateSendWindow(150) // duplicate
+	str.updateSendWindow(120) // reordered
+	str.updateSendWindow(400)
+	require.Equal(t, []int64{50, 250}, got)
+
+	str.SetSendWindowCallback(nil)
+	str.updateSendWindow(500)
+	require.Equal(t, []int64{50, 250}, got)
+}
+
 func TestSendStreamCancellation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const streamID protocol.StreamID = 42

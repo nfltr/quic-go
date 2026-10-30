@@ -182,6 +182,12 @@ func (s *Stream) SetReceiveFinalSizeCallback(callback func(int64)) {
 	s.receiveStr.SetReceiveFinalSizeCallback(callback)
 }
 
+// SetSendWindowCallback sets a callback that is called with each increase of the send window.
+// See [SendStream.SetSendWindowCallback] for more details.
+func (s *Stream) SetSendWindowCallback(callback func(int64)) {
+	s.sendStr.SetSendWindowCallback(callback)
+}
+
 // The Context is canceled as soon as the write-side of the stream is closed.
 // See [SendStream.Context] for more details.
 func (s *Stream) Context() context.Context {

@@ -80,6 +80,8 @@ type SendStream struct {
 	deadline  monotime.Time
 
 	flowController *streamFlowController
+
+	sendWindowCallback func(int64)
 }
 
 var (
@@ -730,16 +732,33 @@ func (s *SendStream) enableResetStreamAt() {
 
 func (s *SendStream) updateSendWindow(limit protocol.ByteCount) {
 	s.mutex.Lock()
+	prev := s.flowController.sendWindow
 	updated := s.flowController.UpdateSendWindow(limit)
 	if !updated { // duplicate or reordered MAX_STREAM_DATA frame
 		s.mutex.Unlock()
 		return
 	}
 	hasStreamData := s.dataForWriting != nil || s.nextFrame != nil
+	callback := s.sendWindowCallback
 	s.mutex.Unlock()
 	if hasStreamData {
 		s.sender.onHasStreamData(s.streamID, s)
 	}
+	if callback != nil {
+		callback(int64(limit - prev))
+	}
+}
+
+// SetSendWindowCallback sets a callback that is called with the number of bytes
+// each increase of the stream's send window adds, as the peer's MAX_STREAM_DATA
+// frames raise it: the peer's reader consumed that much of what was sent.
+// It lets a writer see its data still being consumed after its last Write returned.
+// The callback is called from the connection's event loop and must not block.
+// A later call replaces it; a nil callback removes it.
+func (s *SendStream) SetSendWindowCallback(callback func(int64)) {
+	s.mutex.Lock()
+	s.sendWindowCallback = callback
+	s.mutex.Unlock()
 }
 
 func (s *SendStream) handleStopSendingFrame(f *wire.StopSendingFrame) {
