@@ -207,6 +207,8 @@ type Conn struct {
 	lastPacketReceivedTime monotime.Time
 	// ... and the time we sent a new ack-eliciting packet after receiving a packet.
 	firstAckElicitingPacketAfterIdleSentTime monotime.Time
+	// idleStart is idleTimeoutStartTime, for ConnectionStats (setIdleStart).
+	idleStart atomic.Int64
 	// pacingDeadline is the time when the next packet should be sent
 	pacingDeadline monotime.Time
 
@@ -557,6 +559,7 @@ func (c *Conn) preSetup() {
 	now := monotime.Now()
 	c.lastPacketReceivedTime = now
 	c.creationTime = now
+	c.setIdleStart()
 
 	c.receivedPacketHandler = *ackhandler.NewReceivedPacketHandler(c.logger)
 
@@ -834,6 +837,14 @@ type ConnectionStats struct {
 	// (does not monotonically increase, because packets that are declared lost
 	// can subsequently be received).
 	PacketsLost uint64
+
+	// IdleTimeoutStart is when the idle timer started: the later of the
+	// last packet received and the first ack-eliciting packet sent after
+	// it (a keep-alive PING, data). The connection times out once nothing
+	// was received for the idle timeout since then. A keep-alive or a
+	// packet sent late (the process did not run, or could not send) moves
+	// it later.
+	IdleTimeoutStart time.Time
 }
 
 // ConnectionStats returns statistics about the connection.
@@ -853,6 +864,8 @@ func (c *Conn) ConnectionStats() ConnectionStats {
 		PacketsReceived: c.connStats.PacketsReceived.Load(),
 		BytesLost:       c.connStats.BytesLost.Load(),
 		PacketsLost:     c.connStats.PacketsLost.Load(),
+
+		IdleTimeoutStart: monotime.Time(c.idleStart.Load()).ToTime(),
 	}
 }
 
@@ -915,6 +928,10 @@ func (c *Conn) maybeResetTimer() {
 	}
 	c.timer.Reset(monotime.Until(deadline))
 }
+
+// setIdleStart publishes idleTimeoutStartTime for ConnectionStats; the run
+// loop calls it whenever either of its times changes.
+func (c *Conn) setIdleStart() { c.idleStart.Store(int64(c.idleTimeoutStartTime())) }
 
 func (c *Conn) idleTimeoutStartTime() monotime.Time {
 	startTime := c.lastPacketReceivedTime
@@ -1706,6 +1723,7 @@ func (c *Conn) handleUnpackedLongHeaderPacket(
 
 	c.lastPacketReceivedTime = rcvTime
 	c.firstAckElicitingPacketAfterIdleSentTime = 0
+	c.setIdleStart()
 	c.keepAlivePingSent = false
 
 	if packet.hdr.Type == protocol.PacketType0RTT {
@@ -1756,6 +1774,7 @@ func (c *Conn) handleUnpackedShortHeaderPacket(
 ) (isNonProbing bool, pathChallenge *wire.PathChallengeFrame, _ error) {
 	c.lastPacketReceivedTime = rcvTime
 	c.firstAckElicitingPacketAfterIdleSentTime = 0
+	c.setIdleStart()
 	c.keepAlivePingSent = false
 
 	isAckEliciting, isNonProbing, pathChallenge, err := c.handleFrames(data, destConnID, protocol.Encryption1RTT, log, rcvTime)
@@ -2770,6 +2789,7 @@ func (c *Conn) registerPackedShortHeaderPacket(p shortHeaderPacket, ecn protocol
 	}
 	if c.firstAckElicitingPacketAfterIdleSentTime.IsZero() && (len(p.StreamFrames) > 0 || ackhandler.HasAckElicitingFrames(p.Frames)) {
 		c.firstAckElicitingPacketAfterIdleSentTime = now
+		c.setIdleStart()
 	}
 
 	largestAcked := protocol.InvalidPacketNumber
@@ -2796,6 +2816,7 @@ func (c *Conn) sendPackedCoalescedPacket(packet *coalescedPacket, ecn protocol.E
 	for _, p := range packet.longHdrPackets {
 		if c.firstAckElicitingPacketAfterIdleSentTime.IsZero() && p.IsAckEliciting() {
 			c.firstAckElicitingPacketAfterIdleSentTime = now
+			c.setIdleStart()
 		}
 		largestAcked := protocol.InvalidPacketNumber
 		if p.ack != nil {
@@ -2823,6 +2844,7 @@ func (c *Conn) sendPackedCoalescedPacket(packet *coalescedPacket, ecn protocol.E
 	if p := packet.shortHdrPacket; p != nil {
 		if c.firstAckElicitingPacketAfterIdleSentTime.IsZero() && p.IsAckEliciting() {
 			c.firstAckElicitingPacketAfterIdleSentTime = now
+			c.setIdleStart()
 		}
 		largestAcked := protocol.InvalidPacketNumber
 		if p.Ack != nil {

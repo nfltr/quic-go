@@ -15,10 +15,13 @@
 > 64 packets; a send that fails because the path is briefly gone
 > (ENETUNREACH, EHOSTUNREACH, EADDRNOTAVAIL, ENETDOWN: a NAT rebinding, a
 > host changing networks) is a lost packet, not a closed connection, so the
-> connection migrates once the path is back. One addition:
+> connection migrates once the path is back. Two additions:
 > `Stream.SetSendWindowCallback` reports each increase of a stream's send
 > window (the peer's MAX_STREAM_DATA), so a writer sees its bytes still
-> being consumed after its last Write returned. `master` mirrors upstream.
+> being consumed after its last Write returned; `ConnectionStats`'
+> `IdleTimeoutStart` is when the idle timer started (the first
+> ack-eliciting packet sent after the last one received), so a liveness
+> check sees a keep-alive the process sent late. `master` mirrors upstream.
 
 
 [![Documentation](https://img.shields.io/badge/docs-quic--go.net-red?style=flat)](https://quic-go.net/docs/)

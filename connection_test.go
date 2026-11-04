@@ -2079,6 +2079,64 @@ func TestConnectionIdleTimeout(t *testing.T) {
 	})
 }
 
+// TestConnectionStatsIdleTimeoutStart: ConnectionStats' IdleTimeoutStart is
+// when the idle timer started, the creation time before any packet and the
+// first ack-eliciting packet sent after it, and the connection times out
+// the idle timeout after it.
+func TestConnectionStatsIdleTimeoutStart(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		mockCtrl := gomock.NewController(t)
+		sph := mockackhandler.NewMockSentPacketHandler(mockCtrl)
+		tc := newServerTestConnection(t,
+			mockCtrl,
+			&Config{MaxIdleTimeout: time.Minute},
+			false,
+			connectionOptHandshakeConfirmed(),
+			connectionOptSentPacketHandler(sph),
+			connectionOptRTT(time.Millisecond),
+		)
+		const idleTimeout = 500 * time.Millisecond
+		require.NoError(t, tc.conn.handleTransportParameters(&wire.TransportParameters{
+			MaxIdleTimeout: idleTimeout,
+		}))
+		created := tc.conn.ConnectionStats().IdleTimeoutStart
+		require.False(t, created.IsZero())
+		time.Sleep(100 * time.Millisecond) // the PING below goes out later
+
+		sph.EXPECT().GetLossDetectionTimeout().AnyTimes()
+		sph.EXPECT().SendMode(gomock.Any()).Return(ackhandler.SendAny).AnyTimes()
+		sph.EXPECT().SentPacket(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any())
+		sph.EXPECT().ECNMode(gomock.Any()).AnyTimes()
+		var sent time.Time
+		tc.packer.EXPECT().AppendPacket(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+			func(buf *packetBuffer, _ protocol.ByteCount, _ monotime.Time, _ protocol.Version) (shortHeaderPacket, error) {
+				buf.Data = append(buf.Data, []byte("foobar")...)
+				sent = time.Now()
+				return shortHeaderPacket{Frames: []ackhandler.Frame{{Frame: &wire.PingFrame{}}}, Length: 6}, nil
+			},
+		)
+		tc.packer.EXPECT().AppendPacket(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(shortHeaderPacket{}, errNothingToPack)
+		tc.sendConn.EXPECT().Write(gomock.Any(), gomock.Any(), gomock.Any())
+		tc.connRunner.EXPECT().Remove(gomock.Any()).AnyTimes()
+
+		errChan := make(chan error, 1)
+		go func() { errChan <- tc.conn.run() }()
+		tc.conn.scheduleSending()
+		synctest.Wait()
+
+		start := tc.conn.ConnectionStats().IdleTimeoutStart
+		require.Equal(t, 100*time.Millisecond, start.Sub(created))
+		require.Zero(t, start.Sub(sent))
+		select {
+		case err := <-errChan:
+			require.ErrorIs(t, err, &IdleTimeoutError{})
+			require.Equal(t, idleTimeout, time.Since(start))
+		case <-time.After(time.Hour):
+			t.Fatal("should have timed out")
+		}
+	})
+}
+
 func TestConnectionKeepAlive(t *testing.T) {
 	t.Run("enabled", func(t *testing.T) {
 		testConnectionKeepAlive(t, true, true)
