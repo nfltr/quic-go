@@ -21,7 +21,13 @@
 > being consumed after its last Write returned; `ConnectionStats`'
 > `IdleTimeoutStart` is when the idle timer started (the first
 > ack-eliciting packet sent after the last one received), so a liveness
-> check sees a keep-alive the process sent late. `master` mirrors upstream.
+> check sees a keep-alive the process sent late. Two CPU cuts for hosts
+> without UDP offloads (macOS, where every packet is a syscall): past the
+> first 100 1-RTT packets, with an RTT known, the receiver acknowledges
+> every 10th ack-eliciting packet or after a quarter of the min RTT (as
+> Chromium; receiver-only); on darwin a packet is written inline, in one
+> non-blocking sendmsg, when nothing waits in the send queue, instead of
+> waking the queue's goroutine. `master` mirrors upstream.
 
 
 [![Documentation](https://img.shields.io/badge/docs-quic--go.net-red?style=flat)](https://quic-go.net/docs/)
