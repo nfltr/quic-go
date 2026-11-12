@@ -3,6 +3,7 @@ package quic
 import (
 	"errors"
 	"net"
+	"sync/atomic"
 
 	"github.com/nfltr/quic-go/internal/protocol"
 )
@@ -28,6 +29,11 @@ type sendQueue struct {
 	runStopped  chan struct{} // runStopped when the run loop returns
 	available   chan struct{}
 	conn        sendConn
+
+	// pending counts packets handed to Run and not yet written: Send
+	// writes inline only when it is zero, so packets leave in order.
+	pending atomic.Int32
+	inline  func(p []byte, ecn protocol.ECN) bool // nil: never inline
 }
 
 var _ sender = &sendQueue{}
@@ -35,19 +41,33 @@ var _ sender = &sendQueue{}
 const sendQueueCapacity = 8
 
 func newSendQueue(conn sendConn) sender {
-	return &sendQueue{
+	h := &sendQueue{
 		conn:        conn,
 		runStopped:  make(chan struct{}),
 		closeCalled: make(chan struct{}),
 		available:   make(chan struct{}, 1),
 		queue:       make(chan queueEntry, sendQueueCapacity),
 	}
+	if c, ok := conn.(*sconn); ok {
+		h.inline = c.tryWrite
+	}
+	return h
 }
 
 // Send sends out a packet. It's guaranteed to not block.
 // Callers need to make sure that there's actually space in the send queue by calling WouldBlock.
 // Otherwise Send will panic.
+//
+// nfltr fork: with nothing queued or being written, a single packet (no
+// GSO) is first tried inline, in one sendmsg that never blocks
+// (sconn.tryWrite, darwin only); a packet it did not send goes to the
+// queue as before.
 func (h *sendQueue) Send(p *packetBuffer, gsoSize uint16, ecn protocol.ECN) {
+	if h.inline != nil && gsoSize == 0 && h.pending.Load() == 0 && h.inline(p.Data, ecn) {
+		p.Release()
+		return
+	}
+	h.pending.Add(1)
 	select {
 	case h.queue <- queueEntry{buf: p, gsoSize: gsoSize, ecn: ecn}:
 		// clear available channel if we've reached capacity
@@ -58,6 +78,7 @@ func (h *sendQueue) Send(p *packetBuffer, gsoSize uint16, ecn protocol.ECN) {
 			}
 		}
 	case <-h.runStopped:
+		h.pending.Add(-1)
 	default:
 		panic("sendQueue.Send would have blocked")
 	}
@@ -99,6 +120,7 @@ func (h *sendQueue) Run() error {
 				}
 			}
 			e.buf.Release()
+			h.pending.Add(-1)
 			select {
 			case h.available <- struct{}{}:
 			default:

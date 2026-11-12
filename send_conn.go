@@ -91,6 +91,23 @@ func (c *sconn) Write(p []byte, gsoSize uint16, ecn protocol.ECN) error {
 	return err
 }
 
+// tryWrite sends p (one packet) on the caller's goroutine where the raw
+// conn can without blocking (inlineWriter); false: not sent.
+func (c *sconn) tryWrite(p []byte, ecn protocol.ECN) bool {
+	w, ok := c.rawConn.(inlineWriter)
+	if !ok {
+		return false
+	}
+	ai := c.remoteAddrInfo.Load()
+	return w.tryWritePacket(p, ai.addr, ai.oob, ecn)
+}
+
+// An inlineWriter sends a packet in one attempt that never blocks
+// (oobConn.tryWritePacket); false: not sent.
+type inlineWriter interface {
+	tryWritePacket(b []byte, addr net.Addr, packetInfoOOB []byte, ecn protocol.ECN) bool
+}
+
 func (c *sconn) writePacket(p []byte, addr net.Addr, oob []byte, gsoSize uint16, ecn protocol.ECN) error {
 	_, err := c.WritePacket(p, addr, oob, gsoSize, ecn)
 	if err != nil && !c.wroteFirstPacket && isPermissionError(err) {

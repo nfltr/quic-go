@@ -52,6 +52,9 @@ type oobConn struct {
 	buffers  [batchSize]*packetBuffer
 
 	cap connCapabilities
+
+	raw    syscall.RawConn // tryWritePacket's socket
+	family familyOnce      // its address family (tryWritePacket)
 }
 
 var _ rawConn = &oobConn{}
@@ -126,6 +129,7 @@ func newConn(c OOBCapablePacketConn, supportsDF bool) (*oobConn, error) {
 		batchConn:            bc,
 		messages:             msgs,
 		readPos:              batchSize,
+		raw:                  rawConn,
 		cap: connCapabilities{
 			DF:  supportsDF,
 			GSO: isGSOEnabled(rawConn),
@@ -226,6 +230,12 @@ func (c *oobConn) ReadPacket() (receivedPacket, error) {
 
 // WritePacket writes a new packet.
 func (c *oobConn) WritePacket(b []byte, addr net.Addr, packetInfoOOB []byte, gsoSize uint16, ecn protocol.ECN) (int, error) {
+	n, _, err := c.WriteMsgUDP(b, c.appendOOB(packetInfoOOB, addr, gsoSize, ecn), addr.(*net.UDPAddr))
+	return n, err
+}
+
+// appendOOB is packetInfoOOB with the control messages for gsoSize and ecn.
+func (c *oobConn) appendOOB(packetInfoOOB []byte, addr net.Addr, gsoSize uint16, ecn protocol.ECN) []byte {
 	oob := packetInfoOOB
 	if gsoSize > 0 {
 		if !c.capabilities().GSO {
@@ -245,8 +255,7 @@ func (c *oobConn) WritePacket(b []byte, addr net.Addr, packetInfoOOB []byte, gso
 			}
 		}
 	}
-	n, _, err := c.WriteMsgUDP(b, oob, addr.(*net.UDPAddr))
-	return n, err
+	return oob
 }
 
 func (c *oobConn) capabilities() connCapabilities {
