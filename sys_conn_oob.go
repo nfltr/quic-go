@@ -53,8 +53,9 @@ type oobConn struct {
 
 	cap connCapabilities
 
-	raw    syscall.RawConn // tryWritePacket's socket
-	family familyOnce      // its address family (tryWritePacket)
+	raw     syscall.RawConn  // tryWritePacket's socket
+	family  familyOnce       // its address family (tryWritePacket)
+	deliver connectedDeliver // connected sockets' packets to the transport (darwin)
 }
 
 var _ rawConn = &oobConn{}

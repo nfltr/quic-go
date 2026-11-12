@@ -39,6 +39,10 @@ type sconn struct {
 	// Used to catch the error sometimes returned by the first sendmsg call on Linux,
 	// see https://github.com/golang/go/issues/63322.
 	wroteFirstPacket bool
+
+	// connected sends on a socket connected to the remote address
+	// (darwin only, sys_conn_connected_darwin.go).
+	connected connectedSend
 }
 
 var _ sendConn = &sconn{}
@@ -71,6 +75,11 @@ func newSendConn(c rawConn, remote net.Addr, info packetInfo, logger utils.Logge
 
 func (c *sconn) Write(p []byte, gsoSize uint16, ecn protocol.ECN) error {
 	ai := c.remoteAddrInfo.Load()
+	if gsoSize == 0 {
+		if sent, err := c.connected.write(c, ai, p, ecn); sent {
+			return err
+		}
+	}
 	err := c.writePacket(p, ai.addr, ai.oob, gsoSize, ecn)
 	if err != nil && isGSOError(err) {
 		// disable GSO for future calls
@@ -99,6 +108,9 @@ func (c *sconn) tryWrite(p []byte, ecn protocol.ECN) bool {
 		return false
 	}
 	ai := c.remoteAddrInfo.Load()
+	if handled, ok := c.connected.tryWrite(c, ai, p, ecn); handled {
+		return ok
+	}
 	return w.tryWritePacket(p, ai.addr, ai.oob, ecn)
 }
 
@@ -135,7 +147,12 @@ func (c *sconn) ChangeRemoteAddr(addr net.Addr, info packetInfo) {
 		addr: addr,
 		oob:  info.OOB(),
 	})
+	c.connected.reset()
 }
+
+// closeConnected closes the connected socket, if any: the connection is
+// done with this send conn.
+func (c *sconn) closeConnected() { c.connected.close() }
 
 func (c *sconn) RemoteAddr() net.Addr { return c.remoteAddrInfo.Load().addr }
 func (c *sconn) LocalAddr() net.Addr  { return c.localAddr }

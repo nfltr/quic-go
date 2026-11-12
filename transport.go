@@ -389,6 +389,8 @@ func (t *Transport) init(allowZeroLengthConnIDs bool) error {
 		}
 
 		t.logger = utils.DefaultLogger // TODO: make this configurable
+		// packets read on a connection's connected socket (darwin)
+		setConnectedDeliver(conn, t.handlePacket)
 		t.conn = conn
 		t.handlers = make(map[protocol.ConnectionID]packetHandler)
 		t.resetTokens = make(map[protocol.StatelessResetToken]packetHandler)

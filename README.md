@@ -27,7 +27,13 @@
 > every 10th ack-eliciting packet or after a quarter of the min RTT (as
 > Chromium; receiver-only); on darwin a packet is written inline, in one
 > non-blocking sendmsg, when nothing waits in the send queue, instead of
-> waking the queue's goroutine. `master` mirrors upstream.
+> waking the queue's goroutine; and on darwin a connection that has sent 64
+packets sends on a socket of its own, bound to the shared socket's port
+(SO_REUSEPORT) and connected to the peer, whose received packets are
+handed to the transport as if read on the shared socket: macOS looks up
+the route and policy on every send of an unconnected UDP socket to a
+non-loopback address, about 6 times the cost of a connected send.
+`master` mirrors upstream.
 
 
 [![Documentation](https://img.shields.io/badge/docs-quic--go.net-red?style=flat)](https://quic-go.net/docs/)

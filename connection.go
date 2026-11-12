@@ -752,6 +752,9 @@ runLoop:
 	c.cryptoStreamHandler.Close()
 	c.sendQueue.Close() // close the send queue before sending the CONNECTION_CLOSE
 	c.handleCloseError(closeErr)
+	if sc, ok := c.conn.(*sconn); ok {
+		sc.closeConnected()
+	}
 	if c.qlogger != nil {
 		if _, ok := errors.AsType[*errCloseForRecreating](closeErr.err); !ok {
 			c.qlogger.Close()
@@ -946,6 +949,9 @@ func (c *Conn) switchToNewPath(tr *Transport, now monotime.Time) {
 	c.sentPacketHandler.MigratedPath(now, initialPacketSize)
 	c.maxPayloadSizeEstimate.Store(uint32(estimateMaxPayloadSize(initialPacketSize)))
 	c.mtuDiscoverer.Reset(initialPacketSize, c.maxMTU())
+	if sc, ok := c.conn.(*sconn); ok {
+		sc.closeConnected()
+	}
 	c.conn = newSendConn(tr.conn, c.conn.RemoteAddr(), packetInfo{}, utils.DefaultLogger) // TODO: find a better way
 	if !c.config.DisablePathMTUDiscovery && c.conn.capabilities().DF {
 		c.mtuDiscoverer.Start(now)
