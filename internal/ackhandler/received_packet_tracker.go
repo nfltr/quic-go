@@ -81,6 +81,24 @@ const MaxAckDelay = 25 * time.Millisecond
 // number of ack-eliciting packets received before sending an ACK
 const packetsBeforeAck = 2
 
+// ACK decimation (nfltr fork): once ackDecimationAfter ack-eliciting
+// packets have arrived and the RTT is known, send an ACK every
+// packetsBeforeAckDecimated ack-eliciting packets, or a quarter of the min
+// RTT (at least the timer granularity, at most max_ack_delay) after the
+// first one not yet acknowledged, as Chromium's QUIC does. Every ACK
+// costs a packet each way, and on hosts without UDP offloads (macOS) a
+// send and a receive syscall and the wake-ups behind them: acking every
+// second packet cost about a quarter of quic-go's CPU per MB of a bulk
+// transfer on macOS. A missing packet, reordering and ECN-CE are still
+// acknowledged at once (shouldQueueACK), so loss detection keeps its
+// pace. Receiver-only: no wire change, max_ack_delay is still honoured.
+// Guard: TestAppDataReceivedPacketTrackerDecimation; the gain:
+// github.com/nfltr/link peerlink/quiclink BenchmarkBulkCPU.
+const (
+	ackDecimationAfter        = 100
+	packetsBeforeAckDecimated = 10
+)
+
 // The appDataReceivedPacketTracker tracks packets received in the Application Data packet number space.
 // It waits until at least 2 packets were received before queueing an ACK, or until the max_ack_delay was reached.
 type appDataReceivedPacketTracker struct {
@@ -95,6 +113,9 @@ type appDataReceivedPacketTracker struct {
 
 	ackElicitingPacketsReceivedSinceLastAck int
 	ackAlarm                                monotime.Time
+
+	ackElicitingPacketsReceived int
+	rttStats                    *utils.RTTStats // nil: no ACK decimation
 
 	logger utils.Logger
 }
@@ -119,19 +140,34 @@ func (h *appDataReceivedPacketTracker) ReceivedPacket(pn protocol.PacketNumber, 
 		return nil
 	}
 	h.ackElicitingPacketsReceivedSinceLastAck++
+	h.ackElicitingPacketsReceived++
 	isMissing := h.isMissing(pn)
 	if !h.ackQueued && h.shouldQueueACK(pn, ecn, isMissing) {
 		h.ackQueued = true
 		h.ackAlarm = 0 // cancel the ack alarm
 	}
-	if !h.ackQueued {
-		// No ACK queued, but we'll need to acknowledge the packet after max_ack_delay.
-		h.ackAlarm = rcvTime.Add(MaxAckDelay)
+	if !h.ackQueued && (h.ackAlarm.IsZero() || !h.decimating()) {
+		// No ACK queued, but we'll need to acknowledge the packet after the ACK delay
+		// (decimating: counted from the first packet not yet acknowledged).
+		delay := h.ackDelay()
+		h.ackAlarm = rcvTime.Add(delay)
 		if h.logger.Debug() {
-			h.logger.Debugf("\tSetting ACK timer to max ack delay: %s", MaxAckDelay)
+			h.logger.Debugf("\tSetting ACK timer to %s", delay)
 		}
 	}
 	return nil
+}
+
+func (h *appDataReceivedPacketTracker) decimating() bool {
+	return h.rttStats != nil && h.rttStats.HasMeasurement() && h.ackElicitingPacketsReceived > ackDecimationAfter
+}
+
+// ackDelay is how long an ack-eliciting packet may wait for its ACK.
+func (h *appDataReceivedPacketTracker) ackDelay() time.Duration {
+	if !h.decimating() {
+		return MaxAckDelay
+	}
+	return min(max(h.rttStats.MinRTT()/4, protocol.TimerGranularity), MaxAckDelay)
 }
 
 // IgnoreBelow sets a lower limit for acknowledging packets.
@@ -184,8 +220,12 @@ func (h *appDataReceivedPacketTracker) shouldQueueACK(pn protocol.PacketNumber, 
 		return true
 	}
 
-	// send an ACK every 2 ack-eliciting packets
-	if h.ackElicitingPacketsReceivedSinceLastAck >= packetsBeforeAck {
+	// send an ACK every 2 ack-eliciting packets (decimating: every 10)
+	threshold := packetsBeforeAck
+	if h.decimating() {
+		threshold = packetsBeforeAckDecimated
+	}
+	if h.ackElicitingPacketsReceivedSinceLastAck >= threshold {
 		if h.logger.Debug() {
 			h.logger.Debugf("\tQueueing ACK because packet %d packets were received after the last ACK (using initial threshold: %d).", h.ackElicitingPacketsReceivedSinceLastAck, packetsBeforeAck)
 		}

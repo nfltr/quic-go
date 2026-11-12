@@ -17,13 +17,17 @@ type ReceivedPacketHandler struct {
 	lowest1RTTPacket protocol.PacketNumber
 }
 
-func NewReceivedPacketHandler(logger utils.Logger) *ReceivedPacketHandler {
-	return &ReceivedPacketHandler{
+// NewReceivedPacketHandler: rttStats (nil: none) lets the 1-RTT tracker
+// decimate its ACKs (ackDecimationAfter).
+func NewReceivedPacketHandler(rttStats *utils.RTTStats, logger utils.Logger) *ReceivedPacketHandler {
+	h := &ReceivedPacketHandler{
 		initialPackets:   newReceivedPacketTracker(),
 		handshakePackets: newReceivedPacketTracker(),
 		appDataPackets:   *newAppDataReceivedPacketTracker(logger),
 		lowest1RTTPacket: protocol.InvalidPacketNumber,
 	}
+	h.appDataPackets.rttStats = rttStats
+	return h
 }
 
 func (h *ReceivedPacketHandler) ReceivedPacket(

@@ -186,3 +186,71 @@ func TestAppDataReceivedPacketTrackerIgnoreBelow(t *testing.T) {
 		"receivedPacketTracker BUG: ReceivedPacket called for old / duplicate packet 4",
 	)
 }
+
+// TestAppDataReceivedPacketTrackerDecimation: past the first
+// ackDecimationAfter ack-eliciting packets with an RTT measured, an ACK
+// goes out every packetsBeforeAckDecimated packets, or a quarter of the
+// min RTT after the first unacknowledged one; a missing packet is still
+// acknowledged at once. Without an RTT: every second packet.
+func TestAppDataReceivedPacketTrackerDecimation(t *testing.T) {
+	rtt := utils.NewRTTStats()
+	tr := newAppDataReceivedPacketTracker(utils.DefaultLogger)
+	tr.rttStats = rtt
+	now := monotime.Now()
+	pn := protocol.PacketNumber(0)
+	receive := func() {
+		t.Helper()
+		require.NoError(t, tr.ReceivedPacket(pn, protocol.ECNNon, now, true))
+		pn++
+	}
+	acks := func(n int) int {
+		t.Helper()
+		var k int
+		for range n {
+			receive()
+			if tr.GetAckFrame(now, true) != nil {
+				k++
+			}
+		}
+		return k
+	}
+	require.Equal(t, 100, acks(200), "no RTT measured: every second packet")
+
+	rtt.UpdateRTT(40*time.Millisecond, 0)
+	require.Equal(t, 10, acks(100))
+
+	// The alarm: a quarter of the min RTT after the first unacknowledged packet.
+	receive()
+	first := now
+	now = now.Add(time.Millisecond)
+	receive()
+	require.Equal(t, first.Add(10*time.Millisecond), tr.GetAlarmTimeout())
+	require.Nil(t, tr.GetAckFrame(now, true))
+	require.NotNil(t, tr.GetAckFrame(first.Add(10*time.Millisecond), true))
+
+	// A gap is acknowledged at once.
+	receive()
+	pn += 5
+	receive()
+	require.NotNil(t, tr.GetAckFrame(now, true))
+
+	// The alarm is never past max_ack_delay, nor under the timer granularity.
+	tr2 := newAppDataReceivedPacketTracker(utils.DefaultLogger)
+	tr2.rttStats = utils.NewRTTStats()
+	tr2.rttStats.UpdateRTT(200*time.Microsecond, 0)
+	for i := range 102 {
+		require.NoError(t, tr2.ReceivedPacket(protocol.PacketNumber(i), protocol.ECNNon, now, true))
+		tr2.GetAckFrame(now, true)
+	}
+	require.NoError(t, tr2.ReceivedPacket(102, protocol.ECNNon, now, true))
+	require.Equal(t, now.Add(protocol.TimerGranularity), tr2.GetAlarmTimeout())
+	slow := newAppDataReceivedPacketTracker(utils.DefaultLogger)
+	slow.rttStats = utils.NewRTTStats()
+	slow.rttStats.UpdateRTT(time.Second, 0)
+	for i := range 102 {
+		require.NoError(t, slow.ReceivedPacket(protocol.PacketNumber(i), protocol.ECNNon, now, true))
+		slow.GetAckFrame(now, true)
+	}
+	require.NoError(t, slow.ReceivedPacket(102, protocol.ECNNon, now, true))
+	require.Equal(t, now.Add(MaxAckDelay), slow.GetAlarmTimeout())
+}
