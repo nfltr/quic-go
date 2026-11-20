@@ -14,8 +14,10 @@
 > restores the congestion window also after a reordered burst of more than
 > 64 packets; a send that fails because the path is briefly gone
 > (ENETUNREACH, EHOSTUNREACH, EADDRNOTAVAIL, ENETDOWN: a NAT rebinding, a
-> host changing networks) is a lost packet, not a closed connection, so the
-> connection migrates once the path is back. Two additions:
+> host changing networks) or a local firewall drops it (EPERM, once the
+> socket has sent its first packet) is a lost packet, not a closed
+> connection, so the connection migrates or resumes once the path is
+> back. Two additions:
 > `Stream.SetSendWindowCallback` reports each increase of a stream's send
 > window (the peer's MAX_STREAM_DATA), so a writer sees its bytes still
 > being consumed after its last Write returned; `ConnectionStats`'

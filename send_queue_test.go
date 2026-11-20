@@ -200,8 +200,13 @@ func TestSendQueueWriteError(t *testing.T) {
 // recovery retransmits once the path is back, and the idle timeout ends a
 // connection whose path never returns. Before, the first such error destroyed
 // the connection (found by nfltr's network-faults harness, nat-rebind).
+// A local firewall that drops the packet (iptables/nftables DROP in OUTPUT:
+// a VPN kill switch, a partition) fails sendmsg with EPERM: lost too, once
+// the connection has sent its first packet (found by the same harness over
+// QUIC, partition-agent-5s: a 5 s drop destroyed the agent's connection
+// silently, and the relay held its dead end for the 15 s dead-peer bound).
 func TestSendQueueWriteErrorPathGone(t *testing.T) {
-	for _, errno := range []syscall.Errno{syscall.ENETUNREACH, syscall.EHOSTUNREACH, syscall.EADDRNOTAVAIL, syscall.ENETDOWN} {
+	for _, errno := range []syscall.Errno{syscall.ENETUNREACH, syscall.EHOSTUNREACH, syscall.EADDRNOTAVAIL, syscall.ENETDOWN, syscall.EPERM} {
 		t.Run(errno.Error(), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				mockCtrl := gomock.NewController(t)
