@@ -192,65 +192,108 @@ func TestAppDataReceivedPacketTrackerIgnoreBelow(t *testing.T) {
 // goes out every packetsBeforeAckDecimated packets, or a quarter of the
 // min RTT after the first unacknowledged one; a missing packet is still
 // acknowledged at once. Without an RTT: every second packet.
-func TestAppDataReceivedPacketTrackerDecimation(t *testing.T) {
-	rtt := utils.NewRTTStats()
+// Before an ACK_FREQUENCY frame the receiver is RFC 9000's: an ACK every
+// second ack-eliciting packet, whatever the RTT (the fork's receiver-only
+// decimation is gone: the peer asks for its ACK rate).
+func TestAppDataReceivedPacketTrackerNoDecimationWithoutAckFrequency(t *testing.T) {
 	tr := newAppDataReceivedPacketTracker(utils.DefaultLogger)
-	tr.rttStats = rtt
 	now := monotime.Now()
-	pn := protocol.PacketNumber(0)
-	receive := func() {
-		t.Helper()
+	var k int
+	for pn := range protocol.PacketNumber(400) {
 		require.NoError(t, tr.ReceivedPacket(pn, protocol.ECNNon, now, true))
-		pn++
-	}
-	acks := func(n int) int {
-		t.Helper()
-		var k int
-		for range n {
-			receive()
-			if tr.GetAckFrame(now, true) != nil {
-				k++
-			}
+		if tr.GetAckFrame(now, true) != nil {
+			k++
 		}
-		return k
 	}
-	require.Equal(t, 100, acks(200), "no RTT measured: every second packet")
+	require.Equal(t, 200, k)
+}
 
-	rtt.UpdateRTT(40*time.Millisecond, 0)
-	require.Equal(t, 10, acks(100))
+func ackFrequency(seq, threshold uint64, delay time.Duration, reordering protocol.PacketNumber) *wire.AckFrequencyFrame {
+	return &wire.AckFrequencyFrame{SequenceNumber: seq, AckElicitingThreshold: threshold, RequestMaxAckDelay: delay, ReorderingThreshold: reordering}
+}
 
-	// The alarm: a quarter of the min RTT after the first unacknowledged packet.
-	receive()
-	first := now
-	now = now.Add(time.Millisecond)
-	receive()
-	require.Equal(t, first.Add(10*time.Millisecond), tr.GetAlarmTimeout())
+// spec/AckFrequency.tla (github.com/nfltr/link) CountBound and
+// AckWithinDelay: an ACK after more than the threshold, the alarm the
+// requested delay after the oldest packet not yet acknowledged.
+func TestAppDataReceivedPacketTrackerAckFrequencyThresholdAndDelay(t *testing.T) {
+	tr := newAppDataReceivedPacketTracker(utils.DefaultLogger)
+	tr.SetAckFrequency(ackFrequency(0, 9, 5*time.Millisecond, 10))
+	now := monotime.Now()
+	for pn := range protocol.PacketNumber(9) {
+		require.NoError(t, tr.ReceivedPacket(pn, protocol.ECNNon, now.Add(time.Duration(pn)*100*time.Microsecond), true))
+		require.Nil(t, tr.GetAckFrame(now, true), "packet %d", pn)
+	}
+	// alarm-latest mutant: the alarm stays at the oldest packet's receipt.
+	require.Equal(t, now.Add(5*time.Millisecond), tr.GetAlarmTimeout())
+	require.NoError(t, tr.ReceivedPacket(9, protocol.ECNNon, now, true))
+	require.NotNil(t, tr.GetAckFrame(now, true), "the 10th packet")
+
+	require.NoError(t, tr.ReceivedPacket(10, protocol.ECNNon, now, true))
+	require.Nil(t, tr.GetAckFrame(now.Add(5*time.Millisecond-1), true))
+	require.NotNil(t, tr.GetAckFrame(now.Add(5*time.Millisecond), true))
+
+	// A lower or equal sequence number is ignored.
+	tr.SetAckFrequency(ackFrequency(0, 1, time.Millisecond, 1))
+	for pn := protocol.PacketNumber(11); pn < 20; pn++ {
+		require.NoError(t, tr.ReceivedPacket(pn, protocol.ECNNon, now, true))
+		require.Nil(t, tr.GetAckFrame(now, true), "packet %d", pn)
+	}
+	tr.SetAckFrequency(ackFrequency(1, 0, time.Millisecond, 1))
+	require.NoError(t, tr.ReceivedPacket(20, protocol.ECNNon, now, true))
+	require.NotNil(t, tr.GetAckFrame(now, true), "threshold 0: every packet")
+}
+
+// NoReorderAck (mutant threshold-ignored, the fork's wasMissing rule): a
+// packet late by fewer than the reordering threshold forces no ACK.
+func TestAppDataReceivedPacketTrackerAckFrequencyReorderingWithinThreshold(t *testing.T) {
+	tr := newAppDataReceivedPacketTracker(utils.DefaultLogger)
+	tr.SetAckFrequency(ackFrequency(0, 9, 25*time.Millisecond, 10))
+	now := monotime.Now()
+	for pn := range protocol.PacketNumber(9) {
+		require.NoError(t, tr.ReceivedPacket(pn, protocol.ECNNon, now, true))
+	}
+	require.NoError(t, tr.ReceivedPacket(10, protocol.ECNNon, now, true)) // 9 is late
+	ack := tr.GetAckFrame(now, true)
+	require.NotNil(t, ack)
+	require.Equal(t, protocol.PacketNumber(10), ack.LargestAcked())
+	require.False(t, ack.AcksPacket(9))
+	require.NoError(t, tr.ReceivedPacket(9, protocol.ECNNon, now, true))
+	require.Nil(t, tr.GetAckFrame(now, true), "9 was reported missing, 1 place late: no immediate ACK")
+	for pn := protocol.PacketNumber(11); pn < 19; pn++ {
+		require.NoError(t, tr.ReceivedPacket(pn, protocol.ECNNon, now, true))
+		require.Nil(t, tr.GetAckFrame(now, true), "packet %d", pn)
+	}
+}
+
+// PromptLoss (mutant no-reorder-ack): a hole as deep as the reordering
+// threshold, or a packet that many below the largest acknowledged, is
+// acknowledged at once.
+func TestAppDataReceivedPacketTrackerAckFrequencyDeepHole(t *testing.T) {
+	tr := newAppDataReceivedPacketTracker(utils.DefaultLogger)
+	tr.SetAckFrequency(ackFrequency(0, 9, 25*time.Millisecond, 3))
+	now := monotime.Now()
+	require.NoError(t, tr.ReceivedPacket(0, protocol.ECNNon, now, true))
+	for _, pn := range []protocol.PacketNumber{2, 3} {
+		require.NoError(t, tr.ReceivedPacket(pn, protocol.ECNNon, now, true))
+		require.Nil(t, tr.GetAckFrame(now, true), "packet %d: hole 1 not yet 3 deep", pn)
+	}
+	require.NoError(t, tr.ReceivedPacket(4, protocol.ECNNon, now, true))
+	ack := tr.GetAckFrame(now, true)
+	require.NotNil(t, ack, "hole 1 is 3 deep")
+	require.False(t, ack.AcksPacket(1))
+	require.NoError(t, tr.ReceivedPacket(5, protocol.ECNNon, now, true))
+	require.Nil(t, tr.GetAckFrame(now, true), "hole 1 was reported")
+	require.NoError(t, tr.ReceivedPacket(1, protocol.ECNNon, now, true))
+	require.NotNil(t, tr.GetAckFrame(now, true), "1 arrived 3 or more below the largest acknowledged (4)")
+}
+
+// ImmediateAcked (mutant immediate-dropped).
+func TestAppDataReceivedPacketTrackerImmediateAck(t *testing.T) {
+	tr := newAppDataReceivedPacketTracker(utils.DefaultLogger)
+	tr.SetAckFrequency(ackFrequency(0, 9, 25*time.Millisecond, 10))
+	now := monotime.Now()
+	require.NoError(t, tr.ReceivedPacket(0, protocol.ECNNon, now, true))
 	require.Nil(t, tr.GetAckFrame(now, true))
-	require.NotNil(t, tr.GetAckFrame(first.Add(10*time.Millisecond), true))
-
-	// A gap is acknowledged at once.
-	receive()
-	pn += 5
-	receive()
+	tr.ImmediateAck()
 	require.NotNil(t, tr.GetAckFrame(now, true))
-
-	// The alarm is never past max_ack_delay, nor under the timer granularity.
-	tr2 := newAppDataReceivedPacketTracker(utils.DefaultLogger)
-	tr2.rttStats = utils.NewRTTStats()
-	tr2.rttStats.UpdateRTT(200*time.Microsecond, 0)
-	for i := range 102 {
-		require.NoError(t, tr2.ReceivedPacket(protocol.PacketNumber(i), protocol.ECNNon, now, true))
-		tr2.GetAckFrame(now, true)
-	}
-	require.NoError(t, tr2.ReceivedPacket(102, protocol.ECNNon, now, true))
-	require.Equal(t, now.Add(protocol.TimerGranularity), tr2.GetAlarmTimeout())
-	slow := newAppDataReceivedPacketTracker(utils.DefaultLogger)
-	slow.rttStats = utils.NewRTTStats()
-	slow.rttStats.UpdateRTT(time.Second, 0)
-	for i := range 102 {
-		require.NoError(t, slow.ReceivedPacket(protocol.PacketNumber(i), protocol.ECNNon, now, true))
-		slow.GetAckFrame(now, true)
-	}
-	require.NoError(t, slow.ReceivedPacket(102, protocol.ECNNon, now, true))
-	require.Equal(t, now.Add(MaxAckDelay), slow.GetAlarmTimeout())
 }

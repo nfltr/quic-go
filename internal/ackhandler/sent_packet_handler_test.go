@@ -674,6 +674,33 @@ func TestSentPacketHandlerDelayBasedLossDetection(t *testing.T) {
 	require.Equal(t, []protocol.PacketNumber{pn1, pn2, pn3}, packets.Lost)
 }
 
+// spec/AckFrequency.tla (github.com/nfltr/link) NoSpuriousLoss, mutant
+// sender-threshold: the packet threshold the sender asked its peer for
+// (ACK_FREQUENCY's Reordering Threshold, draft-ietf-quic-ack-frequency
+// section 9) is the one its loss detection uses.
+func TestSentPacketHandlerSetPacketThreshold(t *testing.T) {
+	sph := NewSentPacketHandler(0, 1200, utils.NewRTTStats(), &utils.ConnectionStats{}, true, false, nil, protocol.PerspectiveServer, nil, utils.DefaultLogger, false)
+	sph.SetPacketThreshold(10)
+	var packets packetTracker
+	now := monotime.Now()
+	var pns [12]protocol.PacketNumber
+	for i := range pns {
+		pn := sph.PopPacketNumber(protocol.PacketNumberSpaceAppData)
+		sph.SentPacket(now, pn, protocol.InvalidPacketNumber, nil, []Frame{packets.NewPingFrame(pn)}, protocol.Encryption1RTT, protocol.ECNNon, 1000, false, false)
+		pns[i] = pn
+	}
+	now = now.Add(time.Second)
+	_, err := sph.ReceivedAck(&wire.AckFrame{AckRanges: ackRanges(pns[3:]...)}, protocol.Encryption1RTT, now)
+	require.NoError(t, err)
+	var want []protocol.PacketNumber
+	for _, pn := range pns[:3] {
+		if pns[11]-pn >= 10 {
+			want = append(want, pn)
+		}
+	}
+	require.Equal(t, want, packets.Lost)
+}
+
 func TestSentPacketHandlerPacketBasedLossDetection(t *testing.T) {
 	for _, encLevel := range []protocol.EncryptionLevel{
 		protocol.EncryptionInitial,
