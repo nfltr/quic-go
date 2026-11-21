@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/nfltr/quic-go/internal/congestion"
+	"github.com/nfltr/quic-go/internal/congestion/bbr"
 	"github.com/nfltr/quic-go/internal/monotime"
 	"github.com/nfltr/quic-go/internal/protocol"
 	"github.com/nfltr/quic-go/internal/qerr"
@@ -113,8 +114,13 @@ type sentPacketHandler struct {
 	bytesInFlight protocol.ByteCount
 
 	congestion congestion.SendAlgorithmWithDebugInfos
-	rttStats   *utils.RTTStats
-	connStats  *utils.ConnectionStats
+	// congestionEx is congestion when it takes whole ACK and loss events (BBR).
+	congestionEx congestion.SendAlgorithmEx
+	useBBR       bool
+	ackedInfo    []congestion.AckedPacketInfo
+	lostInfo     []congestion.LostPacketInfo
+	rttStats     *utils.RTTStats
+	connStats    *utils.ConnectionStats
 
 	// The number of times a PTO has been sent without receiving an ack.
 	ptoCount uint32
@@ -151,16 +157,8 @@ func NewSentPacketHandler(
 	pers protocol.Perspective,
 	qlogger qlogwriter.Recorder,
 	logger utils.Logger,
+	useBBR bool,
 ) SentPacketHandler {
-	congestion := congestion.NewCubicSender(
-		congestion.DefaultClock{},
-		rttStats,
-		connStats,
-		initialMaxDatagramSize,
-		true, // use Reno
-		qlogger,
-	)
-
 	h := &sentPacketHandler{
 		peerCompletedAddressValidation: pers == protocol.PerspectiveServer,
 		peerAddressValidated:           pers == protocol.PerspectiveClient || clientAddressValidated,
@@ -178,18 +176,55 @@ func NewSentPacketHandler(
 		lostPackets:        *newLostPacketTracker(),
 		rttStats:           rttStats,
 		connStats:          connStats,
-		congestion:         congestion,
+		useBBR:             useBBR,
 		ignorePacketsBelow: ignorePacketsBelow,
 		perspective:        pers,
 		qlogger:            qlogger,
 		logger:             logger,
 	}
+	h.newCongestionController(initialMaxDatagramSize)
 	if enableECN {
 		h.enableECN = true
 		h.ecnTracker = newECNTracker(logger, qlogger)
 	}
 	h.qlogRecoveryParametersSet(true)
 	return h
+}
+
+func (h *sentPacketHandler) newCongestionController(initialMaxDatagramSize protocol.ByteCount) {
+	h.ackedInfo, h.lostInfo = h.ackedInfo[:0], h.lostInfo[:0]
+	if h.useBBR {
+		h.congestionEx = bbr.New(h.rttStats, initialMaxDatagramSize)
+		h.congestion = h.congestionEx
+		return
+	}
+	h.congestion = congestion.NewCubicSender(
+		congestion.DefaultClock{},
+		h.rttStats,
+		h.connStats,
+		initialMaxDatagramSize,
+		true, // use Reno
+		h.qlogger,
+	)
+}
+
+// flushCongestionEvent hands BBR the packets one ACK or loss-timer event
+// acknowledged and declared lost.
+func (h *sentPacketHandler) flushCongestionEvent(priorInFlight protocol.ByteCount, now monotime.Time) {
+	if h.congestionEx == nil || (len(h.ackedInfo) == 0 && len(h.lostInfo) == 0) {
+		return
+	}
+	leastUnacked, _ := h.hist.FirstOutstanding(protocol.PacketNumberSpaceAppData)
+	if leastUnacked == protocol.InvalidPacketNumber {
+		leastUnacked = h.appDataPackets.largestSent + 1
+	}
+	h.congestionEx.OnCongestionEventEx(priorInFlight, now, h.ackedInfo, h.lostInfo, leastUnacked)
+	for _, p := range h.lostInfo {
+		h.connStats.PacketsLost.Add(1)
+		h.connStats.BytesLost.Add(uint64(p.BytesLost))
+	}
+	h.connStats.CongestionWindow.Store(uint64(h.congestion.GetCongestionWindow()))
+	h.ackedInfo, h.lostInfo = h.ackedInfo[:0], h.lostInfo[:0]
 }
 
 func (h *sentPacketHandler) qlogRecoveryParametersSet(initial bool) {
@@ -507,6 +542,7 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 		h.congestion.OnSpuriousLoss(pn)
 	}
 	if len(ackedPackets) == 0 {
+		h.flushCongestionEvent(priorInFlight, rcvTime)
 		if len(spuriousLosses) > 0 && h.qlogger != nil {
 			h.qlogMetricsUpdated()
 		}
@@ -520,6 +556,9 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 	for _, p := range ackedPackets {
 		if p.includedInBytesInFlight {
 			h.congestion.OnPacketAcked(p.PacketNumber, p.Length, priorInFlight, rcvTime)
+			if h.congestionEx != nil {
+				h.ackedInfo = append(h.ackedInfo, congestion.AckedPacketInfo{PacketNumber: p.PacketNumber, BytesAcked: p.Length, ReceivedTime: rcvTime})
+			}
 		}
 		if p.EncryptionLevel == protocol.Encryption1RTT {
 			acked1RTTPacket = true
@@ -529,6 +568,8 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 			putPacket(p.packet)
 		}
 	}
+
+	h.flushCongestionEvent(priorInFlight, rcvTime)
 
 	// After this point, we must not use ackedPackets any longer!
 	// We've already returned the buffers.
@@ -964,6 +1005,9 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 				if !p.IsPathMTUProbePacket {
 					h.congestion.OnCongestionEvent(pn, p.Length, priorInFlight)
 				}
+				if h.congestionEx != nil {
+					h.lostInfo = append(h.lostInfo, congestion.LostPacketInfo{PacketNumber: pn, BytesLost: p.Length})
+				}
 				if encLevel == protocol.Encryption1RTT && h.ecnTracker != nil {
 					h.ecnTracker.LostPacket(pn)
 				}
@@ -999,7 +1043,9 @@ func (h *sentPacketHandler) OnLossDetectionTimeout(now monotime.Time) error {
 			})
 		}
 		// Early retransmit or time loss detection
+		priorInFlight := h.bytesInFlight
 		h.detectLostPackets(now, encLevel)
+		h.flushCongestionEvent(priorInFlight, now)
 		return nil
 	}
 
@@ -1242,14 +1288,7 @@ func (h *sentPacketHandler) MigratedPath(now monotime.Time, initialMaxDatagramSi
 	for pn := range h.hist.PathProbes() {
 		h.hist.RemovePathProbe(pn)
 	}
-	h.congestion = congestion.NewCubicSender(
-		congestion.DefaultClock{},
-		h.rttStats,
-		h.connStats,
-		initialMaxDatagramSize,
-		true, // use Reno
-		h.qlogger,
-	)
+	h.newCongestionController(initialMaxDatagramSize)
 	h.qlogRecoveryParametersSet(true)
 	h.setLossDetectionTimer(now)
 }

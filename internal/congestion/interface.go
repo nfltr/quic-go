@@ -26,3 +26,24 @@ type SendAlgorithmWithDebugInfos interface {
 	InRecovery() bool
 	GetCongestionWindow() protocol.ByteCount
 }
+
+// AckedPacketInfo is one packet an ACK newly acknowledged.
+type AckedPacketInfo struct {
+	PacketNumber protocol.PacketNumber
+	BytesAcked   protocol.ByteCount
+	ReceivedTime monotime.Time
+}
+
+// LostPacketInfo is one packet declared lost.
+type LostPacketInfo struct {
+	PacketNumber protocol.PacketNumber
+	BytesLost    protocol.ByteCount
+}
+
+// A SendAlgorithmEx also takes each ACK or loss event as a whole: the packets
+// it acknowledged and those it declared lost (BBR's bandwidth sampler needs both),
+// and the lowest packet number still outstanding (state below it is obsolete).
+type SendAlgorithmEx interface {
+	SendAlgorithmWithDebugInfos
+	OnCongestionEventEx(priorInFlight protocol.ByteCount, eventTime monotime.Time, acked []AckedPacketInfo, lost []LostPacketInfo, leastUnacked protocol.PacketNumber)
+}

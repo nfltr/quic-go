@@ -19,7 +19,12 @@
 > connection, so the connection migrates or resumes once the path is
 > back; only ack-eliciting packets are paced (RFC 9002 7.7), so a receiver
 > that ACKs every packet of a reordering path still sends its
-> MAX_STREAM_DATA. Two additions:
+> MAX_STREAM_DATA. Three additions: `Config.CongestionControl` selects
+> BBR (v1, Chromium QUICHE's BbrSender as ported by Hysteria, MIT,
+> `internal/congestion/bbr`) instead of NewReno, the default: on a long
+> path with random loss NewReno's window falls to a few packets and grows
+> one packet per RTT (300 Mbit/s, 260 ms RTT, 0.05 % loss: 3 Mbit/s;
+> BBR: 190 Mbit/s, medians of 6);
 > `Stream.SetSendWindowCallback` reports each increase of a stream's send
 > window (the peer's MAX_STREAM_DATA), so a writer sees its bytes still
 > being consumed after its last Write returned; `ConnectionStats`'

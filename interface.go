@@ -183,6 +183,9 @@ type Config struct {
 	// Allow0RTT allows the application to decide if a 0-RTT connection attempt should be accepted.
 	// Only valid for the server.
 	Allow0RTT bool
+	// CongestionControl selects the sender's congestion controller.
+	// The zero value is NewReno (RFC 9002, Section 7).
+	CongestionControl CongestionControl
 	// Enable QUIC datagram support (RFC 9221).
 	EnableDatagrams bool
 	// Enable QUIC Stream Resets with Partial Delivery.
@@ -191,6 +194,19 @@ type Config struct {
 
 	Tracer func(ctx context.Context, isClient bool, connID ConnectionID) qlogwriter.Trace
 }
+
+// CongestionControl is a sender congestion control algorithm.
+type CongestionControl uint8
+
+const (
+	// CongestionControlReno is NewReno (RFC 9002, Section 7), the default.
+	CongestionControlReno CongestionControl = iota
+	// CongestionControlBBR is BBR (v1, draft-cardwell-iccrg-bbr-congestion-control-00),
+	// ported from Chromium's QUICHE through Hysteria. It paces at the measured
+	// bottleneck bandwidth and does not cut its window for each loss: on a long
+	// path with random loss NewReno's window shrinks to a few packets.
+	CongestionControlBBR
+)
 
 // ClientInfo contains information about an incoming connection attempt.
 type ClientInfo struct {
