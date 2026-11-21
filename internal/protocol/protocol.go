@@ -110,8 +110,15 @@ type StatelessResetToken [16]byte
 // Ethernet's max packet size is 1500 bytes,  1500 - 48 = 1452.
 const MaxPacketBufferSize = 1452
 
-// MaxLargePacketBufferSize is used when using GSO
-const MaxLargePacketBufferSize = 20 * 1024
+// MaxLargePacketBufferSize is used when using GSO: 44 full-size packets in
+// one sendmsg. Linux caps a GSO send at 64 segments (UDP_MAX_SEGMENTS) and
+// one UDP datagram (65535 bytes less the IPv6 and UDP headers); 20 KiB
+// before (nfltr lane SPEED-IO: a third of the sendmsg calls).
+const MaxLargePacketBufferSize = 44 * MaxPacketBufferSize
+
+// MaxGROBufferSize is a receive buffer for one UDP_GRO message: the kernel
+// coalesces at most one UDP datagram's worth of a flow's packets.
+const MaxGROBufferSize = 1 << 16
 
 // MinInitialPacketSize is the minimum size an Initial packet is required to have.
 const MinInitialPacketSize = 1200

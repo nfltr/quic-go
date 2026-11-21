@@ -21,6 +21,8 @@ const (
 
 const ecnIPv4DataLen = 1
 
+const udpGRO = unix.UDP_GRO
+
 const batchSize = 8 // needs to smaller than MaxUint8 (otherwise the type of oobConn.readPos has to be changed)
 
 var kernelVersionMajor int
@@ -74,6 +76,26 @@ func isGSOEnabled(conn syscall.RawConn) bool {
 	var serr error
 	if err := conn.Control(func(fd uintptr) {
 		_, serr = unix.GetsockoptInt(int(fd), unix.IPPROTO_UDP, unix.UDP_SEGMENT)
+	}); err != nil {
+		return false
+	}
+	return serr == nil
+}
+
+// enableGRO turns on UDP_GRO (Linux 5.0+): the kernel hands a flow's
+// datagrams over in one buffer with their size in a control message.
+// QUIC_GO_DISABLE_GRO turns it off, as QUIC_GO_DISABLE_GSO does GSO.
+func enableGRO(conn syscall.RawConn) bool {
+	if kernelVersionMajor < 5 {
+		return false
+	}
+	disabled, err := strconv.ParseBool(os.Getenv("QUIC_GO_DISABLE_GRO"))
+	if err == nil && disabled {
+		return false
+	}
+	var serr error
+	if err := conn.Control(func(fd uintptr) {
+		serr = unix.SetsockoptInt(int(fd), unix.IPPROTO_UDP, unix.UDP_GRO, 1)
 	}); err != nil {
 		return false
 	}

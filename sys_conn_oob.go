@@ -53,6 +53,13 @@ type oobConn struct {
 
 	cap connCapabilities
 
+	// GRO: each message's buffer of its own (MaxGROBufferSize), and the
+	// message ReadPacket is splitting: its fields and the datagrams left.
+	groBufs [batchSize][]byte
+	groMsg  receivedPacket
+	groRest []byte
+	groSeg  int
+
 	raw     syscall.RawConn  // tryWritePacket's socket
 	family  familyOnce       // its address family (tryWritePacket)
 	deliver connectedDeliver // connected sockets' packets to the transport (darwin)
@@ -135,10 +142,14 @@ func newConn(c OOBCapablePacketConn, supportsDF bool) (*oobConn, error) {
 			DF:  supportsDF,
 			GSO: isGSOEnabled(rawConn),
 			ECN: isECNEnabled(),
+			GRO: enableGRO(rawConn),
 		},
 	}
 	for i := range batchSize {
 		oobConn.messages[i].OOB = make([]byte, oobBufferSize)
+		if oobConn.cap.GRO {
+			oobConn.groBufs[i] = make([]byte, protocol.MaxGROBufferSize)
+		}
 	}
 	return oobConn, nil
 }
@@ -146,6 +157,9 @@ func newConn(c OOBCapablePacketConn, supportsDF bool) (*oobConn, error) {
 var invalidCmsgOnceV4, invalidCmsgOnceV6 sync.Once
 
 func (c *oobConn) ReadPacket() (receivedPacket, error) {
+	if c.cap.GRO {
+		return c.readGRO()
+	}
 	if len(c.messages) == int(c.readPos) { // all messages read. Read the next batch of messages.
 		c.messages = c.messages[:batchSize]
 		// replace buffers data buffers up to the packet that has been consumed during the last ReadBatch call
@@ -168,23 +182,86 @@ func (c *oobConn) ReadPacket() (receivedPacket, error) {
 	buffer := c.buffers[c.readPos]
 	c.readPos++
 
-	data := msg.OOB[:msg.NN]
 	p := receivedPacket{
 		remoteAddr: msg.Addr,
 		rcvTime:    monotime.Now(),
 		data:       msg.Buffers[0][:msg.N],
 		buffer:     buffer,
 	}
+	if _, err := parseOOB(msg.OOB[:msg.NN], &p); err != nil {
+		return receivedPacket{}, err
+	}
+	return p, nil
+}
+
+// readGRO returns the next datagram of the messages read with UDP_GRO,
+// each copied into a packet buffer of its own, in the order the kernel
+// coalesced them, with its message's address, ECN mark and packet info
+// (the kernel coalesces only datagrams alike in those). The copy keeps a
+// packet's buffer its own, as without GRO.
+// ponytail: one copy per packet; share the GRO buffer (an atomic refCount) if memmove shows.
+func (c *oobConn) readGRO() (receivedPacket, error) {
+	for len(c.groRest) == 0 {
+		if len(c.messages) == int(c.readPos) {
+			c.messages = c.messages[:batchSize]
+			for i := range c.messages {
+				c.messages[i].Buffers[0] = c.groBufs[i]
+			}
+			c.readPos = 0
+			n, err := c.batchConn.ReadBatch(c.messages, 0)
+			if n == 0 || err != nil {
+				return receivedPacket{}, err
+			}
+			c.messages = c.messages[:n]
+		}
+		msg := &c.messages[c.readPos]
+		c.readPos++
+		c.groMsg = receivedPacket{remoteAddr: msg.Addr, rcvTime: monotime.Now()}
+		seg, err := parseOOB(msg.OOB[:msg.NN], &c.groMsg)
+		if err != nil {
+			return receivedPacket{}, err
+		}
+		c.groRest = msg.Buffers[0][:msg.N]
+		c.groSeg = seg
+		if seg <= 0 {
+			c.groSeg = msg.N
+		}
+	}
+	n := min(c.groSeg, len(c.groRest))
+	var buf *packetBuffer
+	if n <= protocol.MaxPacketBufferSize {
+		buf = getPacketBuffer()
+	} else {
+		buf = getLargePacketBuffer() // a peer's packet over our size, kept whole as without GRO it would be cut
+	}
+	buf.Data = append(buf.Data, c.groRest[:n]...)
+	c.groRest = c.groRest[n:]
+	p := c.groMsg
+	p.buffer, p.data = buf, buf.Data
+	return p, nil
+}
+
+// parseOOB sets p's ECN and packet info from a message's control
+// messages and returns its UDP_GRO segment size (0 without one).
+func parseOOB(data []byte, p *receivedPacket) (groSeg int, _ error) {
 	for len(data) > 0 {
 		hdr, body, remainder, err := unix.ParseOneSocketControlMessage(data)
 		if err != nil {
-			return receivedPacket{}, err
+			return 0, err
+		}
+		if hdr.Level == unix.IPPROTO_UDP && hdr.Type == udpGRO {
+			switch len(body) {
+			case 4:
+				groSeg = int(int32(binary.NativeEndian.Uint32(body)))
+			case 2:
+				groSeg = int(binary.NativeEndian.Uint16(body))
+			}
 		}
 		if hdr.Level == unix.IPPROTO_IP {
 			switch hdr.Type {
 			case msgTypeIPTOS:
 				if len(body) != 1 {
-					return receivedPacket{}, errors.New("invalid IPTOS size")
+					return 0, errors.New("invalid IPTOS size")
 				}
 				p.ecn = protocol.ParseECNHeaderBits(body[0] & ecnMask)
 			case ipv4PKTINFO:
@@ -204,7 +281,7 @@ func (c *oobConn) ReadPacket() (receivedPacket, error) {
 			switch hdr.Type {
 			case unix.IPV6_TCLASS:
 				if len(body) != 4 {
-					return receivedPacket{}, errors.New("invalid IPV6_TCLASS size")
+					return 0, errors.New("invalid IPV6_TCLASS size")
 				}
 				bits := uint8(binary.NativeEndian.Uint32(body)) & ecnMask
 				p.ecn = protocol.ParseECNHeaderBits(bits)
@@ -226,7 +303,7 @@ func (c *oobConn) ReadPacket() (receivedPacket, error) {
 		}
 		data = remainder
 	}
-	return p, nil
+	return groSeg, nil
 }
 
 // WritePacket writes a new packet.

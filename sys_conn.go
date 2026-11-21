@@ -23,6 +23,9 @@ type connCapabilities struct {
 	GSO bool
 	// ECN (Explicit Congestion Notifications) supported
 	ECN bool
+	// GRO (UDP Generic Receive Offload, Linux): a message read may hold
+	// several datagrams of one size, split before the connection sees them.
+	GRO bool
 }
 
 // rawConn is a connection that allow reading of a receivedPackeh.
