@@ -46,7 +46,9 @@ Linux it uses the UDP offloads further: a GSO batch holds up to 44
 full-size packets (was 20 KiB, 14), and receive turns on UDP GRO, the
 kernel's coalesced buffer split back into its packets in order before
 the connection sees them (`QUIC_GO_DISABLE_GRO` turns it off, as
-`QUIC_GO_DISABLE_GSO` does GSO); `SocketBuffers` reports the socket
+`QUIC_GO_DISABLE_GSO` does GSO), and a connection queues up to 4096
+received packets not yet processed (256 upstream), eight such reads, so a
+receiver busy for one read no longer drops the rest of it; `SocketBuffers` reports the socket
 buffers the host gave (asked: `SocketBufferWanted`, 7 MiB), so a program
 can tell its user to raise `net.core.rmem_max`/`wmem_max`.
 `master` mirrors upstream.

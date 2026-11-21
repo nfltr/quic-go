@@ -40,7 +40,14 @@ const DefaultMaxIncomingUniStreams = 100
 const MaxServerUnprocessedPackets = 1024
 
 // MaxConnUnprocessedPackets is the max number of packets stored in each connection that are not yet processed.
-const MaxConnUnprocessedPackets = 256
+// nfltr fork: eight reads with UDP GRO (8 messages per recvmmsg, each up to
+// 64 coalesced packets), 256 upstream (no GRO: 32 reads). With 256 a bulk
+// receiver busy for one read dropped the rest of it: a quarter of the
+// packets of one transfer at 0.2 ms RTT, each resent after the loss time
+// threshold, 1.5 instead of 3.4 Gbit/s (nfltr lane SPEEDWAIT). At most
+// 4096 packet buffers (about 6 MB) per connection.
+// Guard: TestConnectionQueueHoldsGROReads.
+const MaxConnUnprocessedPackets = 8 * 8 * 64
 
 // MaxAcceptQueueSize is the maximum number of connections that the server queues for accepting.
 // If the queue is full, new connection attempts will be rejected.
