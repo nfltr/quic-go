@@ -228,13 +228,11 @@ func (c *oobConn) readGRO() (receivedPacket, error) {
 		}
 	}
 	n := min(c.groSeg, len(c.groRest))
-	var buf *packetBuffer
-	if n <= protocol.MaxPacketBufferSize {
-		buf = getPacketBuffer()
-	} else {
-		buf = getLargePacketBuffer() // a peer's packet over our size, kept whole as without GRO it would be cut
-	}
-	buf.Data = append(buf.Data, c.groRest[:n]...)
+	buf := getPacketBuffer()
+	// A peer's datagram over our packet size is cut to it, as the kernel
+	// cuts it without GRO: a queued packet never holds more than
+	// MaxPacketBufferSize (TestGROCutsOversizedDatagrams).
+	buf.Data = append(buf.Data, c.groRest[:min(n, protocol.MaxPacketBufferSize)]...)
 	c.groRest = c.groRest[n:]
 	p := c.groMsg
 	p.buffer, p.data = buf, buf.Data
