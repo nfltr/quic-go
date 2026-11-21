@@ -115,6 +115,8 @@ type appDataReceivedPacketTracker struct {
 	policy    ackPolicy
 	policySeq int64 // the largest ACK_FREQUENCY sequence number applied (-1: none)
 
+	tr *ackTrace // -tags quicacktrace (trace_on.go)
+
 	logger utils.Logger
 }
 
@@ -124,8 +126,16 @@ func newAppDataReceivedPacketTracker(logger utils.Logger) *appDataReceivedPacket
 		policy:                defaultAckPolicy,
 		policySeq:             -1,
 		logger:                logger,
+		tr:                    newAckTrace(),
+	}
+	if traceOn {
+		h.tracePolicy()
 	}
 	return h
+}
+
+func (h *appDataReceivedPacketTracker) tracePolicy() {
+	h.trace("Policy", "T", h.policy.threshold, "R", h.policy.reordering, "MAD", h.policy.maxDelay.Microseconds())
 }
 
 func (h *appDataReceivedPacketTracker) ReceivedPacket(pn protocol.PacketNumber, ecn protocol.ECN, rcvTime monotime.Time, ackEliciting bool) error {
@@ -135,6 +145,9 @@ func (h *appDataReceivedPacketTracker) ReceivedPacket(pn protocol.PacketNumber, 
 	if pn >= h.largestObserved {
 		h.largestObserved = pn
 		h.largestObservedRcvdTime = rcvTime
+	}
+	if traceOn {
+		defer h.trace("Recv", "pn", pn, "el", ackEliciting, "ce", ecn == protocol.ECNCE, "t", rcvTime)
 	}
 	if !ackEliciting {
 		return nil
@@ -175,12 +188,18 @@ func (h *appDataReceivedPacketTracker) SetAckFrequency(f *wire.AckFrequencyFrame
 	if !h.ackAlarm.IsZero() && h.policy.maxDelay < old.maxDelay {
 		h.ackAlarm = h.ackAlarm.Add(h.policy.maxDelay - old.maxDelay)
 	}
+	if traceOn {
+		h.tracePolicy()
+	}
 }
 
 // ImmediateAck handles an IMMEDIATE_ACK frame: an ACK at once.
 func (h *appDataReceivedPacketTracker) ImmediateAck() {
 	h.ackQueued = true
 	h.ackAlarm = 0
+	if traceOn {
+		h.trace("Imm")
+	}
 }
 
 // IgnoreBelow sets a lower limit for acknowledging packets.
@@ -191,6 +210,9 @@ func (h *appDataReceivedPacketTracker) IgnoreBelow(pn protocol.PacketNumber) {
 	}
 	h.ignoreBelow = pn
 	h.packetHistory.DeleteBelow(pn)
+	if traceOn {
+		h.trace("Ignore", "pn", pn)
+	}
 	if h.logger.Debug() {
 		h.logger.Debugf("\tIgnoring all packets below %d.", pn)
 	}
@@ -259,6 +281,9 @@ func (h *appDataReceivedPacketTracker) GetAckFrame(now monotime.Time, onlyIfQueu
 	h.ackQueued = false
 	h.ackAlarm = 0
 	h.ackElicitingPacketsReceivedSinceLastAck = 0
+	if traceOn {
+		h.trace("Ack", "t", now, "oq", onlyIfQueued, "la", ack.LargestAcked())
+	}
 	return ack
 }
 
