@@ -23,7 +23,7 @@
 > being consumed after its last Write returned; `ConnectionStats`'
 > `IdleTimeoutStart` is when the idle timer started (the first
 > ack-eliciting packet sent after the last one received), so a liveness
-> check sees a keep-alive the process sent late. Two CPU cuts for hosts
+> check sees a keep-alive the process sent late. Three CPU cuts for hosts
 > without UDP offloads (macOS, where every packet is a syscall): past the
 > first 100 1-RTT packets, with an RTT known, the receiver acknowledges
 > every 10th ack-eliciting packet or after a quarter of the min RTT (as
