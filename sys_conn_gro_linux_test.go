@@ -184,3 +184,52 @@ func TestSocketBuffers(t *testing.T) {
 	require.Equal(t, want, r)
 	require.Positive(t, w)
 }
+
+// TestGROCutsOversizedDatagrams: a peer's datagram over our packet size
+// (alone, or coalesced at a segment size over it) is cut to
+// MaxPacketBufferSize in a buffer of that size, as without GRO, never kept
+// in a 64 KiB buffer: a peer sending such datagrams to a busy connection
+// could otherwise pin MaxConnUnprocessedPackets x 64 KiB (~256 MiB); cut,
+// the queue holds at most 4096 x 1452 bytes (~5.7 MiB) (nfltr lane FORKGRO).
+func TestGROCutsOversizedDatagrams(t *testing.T) {
+	require.LessOrEqual(t, protocol.MaxConnUnprocessedPackets*protocol.MaxPacketBufferSize, 6<<20)
+	big := bytes.Repeat([]byte("0123456789"), 900) // 9000 bytes
+	for _, gro := range []bool{true, false} {
+		t.Run(map[bool]string{true: "gro", false: "no-gro"}[gro], func(t *testing.T) {
+			if !gro {
+				t.Setenv("QUIC_GO_DISABLE_GRO", "true")
+			}
+			udpConn := newUDPConnLocalhost(t)
+			c, err := newConn(udpConn, true)
+			require.NoError(t, err)
+			if gro && !c.capabilities().GRO {
+				t.Skip("no UDP_GRO on this kernel")
+			}
+			sender := newUDPConnLocalhost(t)
+			_, err = sender.WriteTo(big, udpConn.LocalAddr())
+			require.NoError(t, err)
+			p, err := c.ReadPacket()
+			require.NoError(t, err)
+			require.Equal(t, big[:protocol.MaxPacketBufferSize], p.data)
+			require.Equal(t, protocol.ByteCount(protocol.MaxPacketBufferSize), p.buffer.Cap())
+			p.buffer.Release()
+		})
+	}
+	t.Run("coalesced", func(t *testing.T) {
+		c, err := newConn(newUDPConnLocalhost(t), true)
+		require.NoError(t, err)
+		if !c.capabilities().GRO {
+			t.Skip("no UDP_GRO on this kernel")
+		}
+		seg := 2000
+		msg := append(append(bytes.Repeat([]byte("a"), seg), bytes.Repeat([]byte("b"), seg)...), "tail"...)
+		c.batchConn = &groBatchConn{msgs: [][]byte{msg}, segs: []int{seg}, ecn: []protocol.ECN{protocol.ECT0}}
+		for _, w := range [][]byte{msg[:protocol.MaxPacketBufferSize], msg[seg : seg+protocol.MaxPacketBufferSize], []byte("tail")} {
+			p, err := c.ReadPacket()
+			require.NoError(t, err)
+			require.Equal(t, w, p.data)
+			require.Equal(t, protocol.ByteCount(protocol.MaxPacketBufferSize), p.buffer.Cap())
+			p.buffer.Release()
+		}
+	})
+}
