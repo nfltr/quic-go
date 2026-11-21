@@ -17,7 +17,9 @@
 > host changing networks) or a local firewall drops it (EPERM, once the
 > socket has sent its first packet) is a lost packet, not a closed
 > connection, so the connection migrates or resumes once the path is
-> back. Two additions:
+> back; only ack-eliciting packets are paced (RFC 9002 7.7), so a receiver
+> that ACKs every packet of a reordering path still sends its
+> MAX_STREAM_DATA. Two additions:
 > `Stream.SetSendWindowCallback` reports each increase of a stream's send
 > window (the peer's MAX_STREAM_DATA), so a writer sees its bytes still
 > being consumed after its last Write returned; `ConnectionStats`'

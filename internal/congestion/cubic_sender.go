@@ -168,10 +168,16 @@ func (c *cubicSender) OnPacketSent(
 	bytes protocol.ByteCount,
 	isRetransmittable bool,
 ) {
-	c.pacer.SentPacket(sentTime, bytes, c.pacingRate())
 	if !isRetransmittable {
+		// Only ack-eliciting packets are paced (RFC 9002, Section 7.7: pacing applies to
+		// in-flight packets; QUICHE's PacingSender likewise skips them). Charging ACK-only
+		// packets to the pacer starves a receiver on a reordering path, which ACKs every
+		// out-of-order packet at once: its budget goes to ACKs, the connection stays
+		// pacing-limited (ACK-only packets), and its MAX_STREAM_DATA waits.
+		// Guard: TestBulkUploadOnReorderingPath, TestCubicSenderAckOnlyPacketsNotPaced.
 		return
 	}
+	c.pacer.SentPacket(sentTime, bytes, c.pacingRate())
 	c.largestSentPacketNumber = packetNumber
 	c.hybridSlowStart.OnPacketSent(packetNumber)
 }

@@ -156,6 +156,21 @@ func TestCubicSenderPacingRate(t *testing.T) {
 	require.InDelta(t, wantDelay, float64(sender.TimeUntilSend(0).Sub(clock.Now())), float64(time.Microsecond))
 }
 
+// ACK-only packets are not paced: a receiver that ACKs every packet of a
+// reordering path must keep the budget for its MAX_STREAM_DATA.
+func TestCubicSenderAckOnlyPacketsNotPaced(t *testing.T) {
+	var clock mockClock
+	clock.Advance(time.Second)
+	rttStats := utils.NewRTTStats()
+	rttStats.UpdateRTT(260*time.Millisecond, 0)
+	sender := NewCubicSender(&clock, rttStats, &utils.ConnectionStats{}, maxDatagramSize, true, nil)
+	for pn := protocol.PacketNumber(0); pn < 10000; pn++ {
+		sender.OnPacketSent(clock.Now(), 0, pn, maxDatagramSize, false)
+	}
+	require.True(t, sender.HasPacingBudget(clock.Now()))
+	require.Zero(t, sender.TimeUntilSend(0))
+}
+
 func TestCubicSenderApplicationLimitedSlowStart(t *testing.T) {
 	sender := newTestCubicSender(false)
 
