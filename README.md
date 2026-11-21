@@ -41,7 +41,14 @@ packets sends on a socket of its own, bound to the shared socket's port
 (SO_REUSEPORT) and connected to the peer, whose received packets are
 handed to the transport as if read on the shared socket: macOS looks up
 the route and policy on every send of an unconnected UDP socket to a
-non-loopback address, about 6 times the cost of a connected send.
+non-loopback address, about 6 times the cost of a connected send. On
+Linux it uses the UDP offloads further: a GSO batch holds up to 44
+full-size packets (was 20 KiB, 14), and receive turns on UDP GRO, the
+kernel's coalesced buffer split back into its packets in order before
+the connection sees them (`QUIC_GO_DISABLE_GRO` turns it off, as
+`QUIC_GO_DISABLE_GSO` does GSO); `SocketBuffers` reports the socket
+buffers the host gave (asked: `SocketBufferWanted`, 7 MiB), so a program
+can tell its user to raise `net.core.rmem_max`/`wmem_max`.
 `master` mirrors upstream.
 
 
