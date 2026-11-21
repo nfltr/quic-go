@@ -17,18 +17,24 @@ type ReceivedPacketHandler struct {
 	lowest1RTTPacket protocol.PacketNumber
 }
 
-// NewReceivedPacketHandler: rttStats (nil: none) lets the 1-RTT tracker
-// decimate its ACKs (ackDecimationAfter).
-func NewReceivedPacketHandler(rttStats *utils.RTTStats, logger utils.Logger) *ReceivedPacketHandler {
+func NewReceivedPacketHandler(logger utils.Logger) *ReceivedPacketHandler {
 	h := &ReceivedPacketHandler{
 		initialPackets:   newReceivedPacketTracker(),
 		handshakePackets: newReceivedPacketTracker(),
 		appDataPackets:   *newAppDataReceivedPacketTracker(logger),
 		lowest1RTTPacket: protocol.InvalidPacketNumber,
 	}
-	h.appDataPackets.rttStats = rttStats
 	return h
 }
+
+// SetAckFrequency applies the peer's ACK_FREQUENCY frame to the 1-RTT
+// packet number space (draft-ietf-quic-ack-frequency).
+func (h *ReceivedPacketHandler) SetAckFrequency(f *wire.AckFrequencyFrame) {
+	h.appDataPackets.SetAckFrequency(f)
+}
+
+// ImmediateAck handles an IMMEDIATE_ACK frame.
+func (h *ReceivedPacketHandler) ImmediateAck() { h.appDataPackets.ImmediateAck() }
 
 func (h *ReceivedPacketHandler) ReceivedPacket(
 	pn protocol.PacketNumber,

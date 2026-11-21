@@ -270,21 +270,27 @@ func TestAppDataReceivedPacketTrackerAckFrequencyReorderingWithinThreshold(t *te
 // acknowledged at once.
 func TestAppDataReceivedPacketTrackerAckFrequencyDeepHole(t *testing.T) {
 	tr := newAppDataReceivedPacketTracker(utils.DefaultLogger)
-	tr.SetAckFrequency(ackFrequency(0, 9, 25*time.Millisecond, 3))
+	tr.SetAckFrequency(ackFrequency(0, 2, 25*time.Millisecond, 3))
 	now := monotime.Now()
-	require.NoError(t, tr.ReceivedPacket(0, protocol.ECNNon, now, true))
-	for _, pn := range []protocol.PacketNumber{2, 3} {
+	for pn := range protocol.PacketNumber(3) { // holes are reported once an ACK was sent
 		require.NoError(t, tr.ReceivedPacket(pn, protocol.ECNNon, now, true))
-		require.Nil(t, tr.GetAckFrame(now, true), "packet %d: hole 1 not yet 3 deep", pn)
 	}
-	require.NoError(t, tr.ReceivedPacket(4, protocol.ECNNon, now, true))
+	require.NotNil(t, tr.GetAckFrame(now, true))
+	tr.SetAckFrequency(ackFrequency(1, 9, 25*time.Millisecond, 3))
+	require.NoError(t, tr.ReceivedPacket(3, protocol.ECNNon, now, true))
+	require.Nil(t, tr.GetAckFrame(now, true))
+	for _, pn := range []protocol.PacketNumber{5, 6} {
+		require.NoError(t, tr.ReceivedPacket(pn, protocol.ECNNon, now, true))
+		require.Nil(t, tr.GetAckFrame(now, true), "packet %d: hole 4 not yet 3 deep", pn)
+	}
+	require.NoError(t, tr.ReceivedPacket(7, protocol.ECNNon, now, true))
 	ack := tr.GetAckFrame(now, true)
-	require.NotNil(t, ack, "hole 1 is 3 deep")
-	require.False(t, ack.AcksPacket(1))
-	require.NoError(t, tr.ReceivedPacket(5, protocol.ECNNon, now, true))
-	require.Nil(t, tr.GetAckFrame(now, true), "hole 1 was reported")
-	require.NoError(t, tr.ReceivedPacket(1, protocol.ECNNon, now, true))
-	require.NotNil(t, tr.GetAckFrame(now, true), "1 arrived 3 or more below the largest acknowledged (4)")
+	require.NotNil(t, ack, "hole 4 is 3 deep")
+	require.False(t, ack.AcksPacket(4))
+	require.NoError(t, tr.ReceivedPacket(8, protocol.ECNNon, now, true))
+	require.Nil(t, tr.GetAckFrame(now, true), "hole 4 was reported")
+	require.NoError(t, tr.ReceivedPacket(4, protocol.ECNNon, now, true))
+	require.NotNil(t, tr.GetAckFrame(now, true), "4 arrived 3 or more below the largest acknowledged (7)")
 }
 
 // ImmediateAcked (mutant immediate-dropped).

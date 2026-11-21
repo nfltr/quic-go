@@ -31,10 +31,11 @@
 > `IdleTimeoutStart` is when the idle timer started (the first
 > ack-eliciting packet sent after the last one received), so a liveness
 > check sees a keep-alive the process sent late. Three CPU cuts for hosts
-> without UDP offloads (macOS, where every packet is a syscall): past the
-> first 100 1-RTT packets, with an RTT known, the receiver acknowledges
-> every 10th ack-eliciting packet or after a quarter of the min RTT (as
-> Chromium; receiver-only); on darwin a packet is written inline, in one
+> without UDP offloads (macOS, where every packet is a syscall): the
+> QUIC ACK Frequency extension (`Config.AckFrequency`: the receiver
+> acknowledges at the rate the sender asks for in ACK_FREQUENCY, and a
+> reordering within its threshold forces no ACK; the sender's packet
+> threshold is that reordering threshold); on darwin a packet is written inline, in one
 > non-blocking sendmsg, when nothing waits in the send queue, instead of
 > waking the queue's goroutine; and on darwin a connection that has sent 64
 packets sends on a socket of its own, bound to the shared socket's port
@@ -69,6 +70,7 @@ Other QUIC specifications:
 * Datagram Packetization Layer Path MTU Discovery (DPLPMTUD, [RFC 8899](https://datatracker.ietf.org/doc/html/rfc8899))
 * QUIC Version 2 ([RFC 9369](https://datatracker.ietf.org/doc/html/rfc9369))
 * QUIC Event Logging using qlog ([draft-ietf-quic-qlog-main-schema](https://datatracker.ietf.org/doc/draft-ietf-quic-qlog-main-schema/) and [draft-ietf-quic-qlog-quic-events](https://datatracker.ietf.org/doc/draft-ietf-quic-qlog-quic-events/))
+* QUIC Acknowledgment Frequency ([draft-ietf-quic-ack-frequency-14](https://datatracker.ietf.org/doc/html/draft-ietf-quic-ack-frequency-14)): `Config.AckFrequency`
 * QUIC Stream Resets with Partial Delivery ([draft-ietf-quic-reliable-stream-reset-07](https://datatracker.ietf.org/doc/html/draft-ietf-quic-reliable-stream-reset-07) and [draft-ietf-quic-reliable-stream-reset-09](https://datatracker.ietf.org/doc/html/draft-ietf-quic-reliable-stream-reset-09))
 
 quic-go also supports HTTP/3 ([RFC 9114](https://datatracker.ietf.org/doc/html/rfc9114)).

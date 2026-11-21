@@ -79,7 +79,16 @@ type reorderCase struct {
 	// min is the second half's rate the case must reach, as a fraction of the
 	// bottleneck's (0: report only).
 	min float64
+	// ack: the ACK policy both ends ask for (nil: RFC 9000's ACKs);
+	// maxAcks: the most ACK-carrying packets the receiver may send per data
+	// packet it receives (0: report only).
+	ack     *quic.AckFrequency
+	maxAcks float64
 }
+
+// nfltr's direct-path ACK policy (link peerlink/quiclink): an ACK every 10
+// packets, a hole 10 deep acknowledged at once, a quarter of the min RTT.
+var quiclinkAcks = &quic.AckFrequency{AckElicitingThreshold: 9, ReorderingThreshold: 10}
 
 // TestBulkUploadOnReorderingPath: one stream's bulk upload over a 300 Mbit/s,
 // 260 ms RTT bottleneck that reorders 30 % of packets by up to 10 places and
@@ -97,14 +106,20 @@ type reorderCase struct {
 func TestBulkUploadOnReorderingPath(t *testing.T) {
 	reno, bbr := quic.CongestionControlReno, quic.CongestionControlBBR
 	for _, c := range []reorderCase{
-		{"reno/clean", reno, 0, 0, 0.85},
-		{"reno/reorder", reno, 0.3, 0, 0.85},
-		{"reno/loss", reno, 0, 0.0005, 0},
-		{"reno/reorder+loss", reno, 0.3, 0.0005, 0},
-		{"bbr/clean", bbr, 0, 0, 0.85},
-		{"bbr/reorder", bbr, 0.3, 0, 0.85},
-		{"bbr/loss", bbr, 0, 0.0005, 0.5},
-		{"bbr/reorder+loss", bbr, 0.3, 0.0005, 0.5},
+		{"reno/clean", reno, 0, 0, 0.85, nil, 0},
+		{"reno/reorder", reno, 0.3, 0, 0.85, nil, 0},
+		{"reno/loss", reno, 0, 0.0005, 0, nil, 0},
+		{"reno/reorder+loss", reno, 0.3, 0.0005, 0, nil, 0},
+		{"bbr/clean", bbr, 0, 0, 0.85, nil, 0},
+		{"bbr/reorder", bbr, 0.3, 0, 0.85, nil, 0},
+		{"bbr/loss", bbr, 0, 0.0005, 0.5, nil, 0},
+		{"bbr/reorder+loss", bbr, 0.3, 0.0005, 0.5, nil, 0},
+		// ACK_FREQUENCY (lane SPEED-ACK): reordering within 10 places forces
+		// no ACK, so the receiver sends one per 10 packets instead of about
+		// one per 2-3, at the same rate.
+		{"bbr/clean/ackfreq", bbr, 0, 0, 0.85, quiclinkAcks, 0.12},
+		{"bbr/reorder/ackfreq", bbr, 0.3, 0, 0.85, quiclinkAcks, 0.12},
+		{"bbr/reorder+loss/ackfreq", bbr, 0.3, 0.0005, 0.5, quiclinkAcks, 0.15},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			testBulkUploadReorder(t, c)
@@ -139,6 +154,7 @@ func testBulkUploadReorder(t *testing.T, c reorderCase) {
 			InitialConnectionReceiveWindow: 16 * window,
 			MaxConnectionReceiveWindow:     16 * window,
 			CongestionControl:              c.cc,
+			AckFrequency:                   c.ack,
 		})
 		ln, err := quic.Listen(serverConn, getTLSConfig(), qc)
 		require.NoError(t, err)
@@ -196,10 +212,17 @@ func testBulkUploadReorder(t *testing.T, c reorderCase) {
 		router.mu.Lock()
 		dropped := router.dropped
 		router.mu.Unlock()
-		t.Logf("second half at %.1f Mbit/s (%.0f%%); %d of %d packets lost (%d at the queue)",
-			got/1e6, 100*got/rate, st.PacketsLost, st.PacketsSent, dropped)
+		acks := float64(st.PacketsReceived) / float64(st.PacketsSent)
+		t.Logf("second half at %.1f Mbit/s (%.0f%%); %d of %d packets lost (%d at the queue); %.3f ACK packets per data packet",
+			got/1e6, 100*got/rate, st.PacketsLost, st.PacketsSent, dropped, acks)
 		// benchstat-readable: go test -run TestBulkUploadOnReorderingPath -v -count 6 | sed -n 's/^ *reorder_test.go:[0-9]*: //p' | grep ^Benchmark
 		t.Logf("BenchmarkReorderingPath/%s 1 %.1f Mbit/s", c.name, got/1e6)
 		require.GreaterOrEqual(t, got, c.min*rate)
+		if c.ack != nil {
+			require.True(t, conn.ConnectionState().SupportsAckFrequency.Remote)
+		}
+		if c.maxAcks > 0 {
+			require.LessOrEqual(t, acks, c.maxAcks)
+		}
 	})
 }

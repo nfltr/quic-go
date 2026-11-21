@@ -355,6 +355,9 @@ var newConnection = func(
 	} else {
 		params.MaxDatagramFrameSize = protocol.InvalidByteCount
 	}
+	if s.config.AckFrequency != nil {
+		params.MinAckDelay = &minAckDelay
+	}
 	if s.qlogger != nil {
 		s.qlogTransportParameters(params, protocol.PerspectiveServer, false)
 	}
@@ -494,6 +497,9 @@ var newClientConnection = func(
 	} else {
 		params.MaxDatagramFrameSize = protocol.InvalidByteCount
 	}
+	if s.config.AckFrequency != nil {
+		params.MinAckDelay = &minAckDelay
+	}
 	if s.qlogger != nil {
 		s.qlogTransportParameters(params, protocol.PerspectiveClient, false)
 	}
@@ -526,7 +532,7 @@ func (c *Conn) preSetup() {
 	c.frameParser = *wire.NewFrameParser(
 		c.config.EnableDatagrams,
 		c.config.EnableStreamResetPartialDelivery,
-		false, // ACK_FREQUENCY is not supported yet
+		c.config.AckFrequency != nil,
 	)
 	c.rttStats = utils.NewRTTStats()
 	c.connFlowController = newConnectionFlowController(
@@ -563,7 +569,7 @@ func (c *Conn) preSetup() {
 	c.creationTime = now
 	c.setIdleStart()
 
-	c.receivedPacketHandler = *ackhandler.NewReceivedPacketHandler(c.rttStats, c.logger)
+	c.receivedPacketHandler = *ackhandler.NewReceivedPacketHandler(c.logger)
 
 	c.datagramQueue = newDatagramQueue(c.scheduleSending, c.logger, c.qlogger)
 	c.connState.Version = c.version
@@ -793,9 +799,11 @@ func (c *Conn) ConnectionState() ConnectionState {
 	if c.peerParams != nil {
 		c.connState.SupportsDatagrams.Remote = c.supportsDatagrams()
 		c.connState.SupportsStreamResetPartialDelivery.Remote = c.peerParams.EnableResetStreamAt
+		c.connState.SupportsAckFrequency.Remote = c.peerParams.MinAckDelay != nil
 	}
 	c.connState.SupportsDatagrams.Local = c.config.EnableDatagrams
 	c.connState.SupportsStreamResetPartialDelivery.Local = c.config.EnableStreamResetPartialDelivery
+	c.connState.SupportsAckFrequency.Local = c.config.AckFrequency != nil
 	c.connState.GSO = c.conn.capabilities().GSO
 	return c.connState
 }
@@ -1023,10 +1031,50 @@ func (c *Conn) handleHandshakeConfirmed(now monotime.Time) error {
 
 	c.handshakeConfirmed = true
 	c.cryptoStreamHandler.SetHandshakeConfirmed()
+	c.sendAckFrequency()
 
 	if !c.config.DisablePathMTUDiscovery && c.conn.capabilities().DF {
 		c.mtuDiscoverer.Start(now)
 	}
+	return nil
+}
+
+// minAckDelay is the min_ack_delay this side advertises with Config.AckFrequency:
+// its ACK timer's granularity.
+var minAckDelay = protocol.TimerGranularity
+
+// sendAckFrequency asks a peer that advertised min_ack_delay for
+// Config.AckFrequency's policy, once (sequence 0; a lost frame is resent as a
+// control frame), and makes its Reordering Threshold this side's packet
+// threshold (draft-ietf-quic-ack-frequency section 9). Model: github.com/nfltr/link
+// spec/AckFrequency.tla.
+func (c *Conn) sendAckFrequency() {
+	af := c.config.AckFrequency
+	if af == nil || c.peerParams == nil || c.peerParams.MinAckDelay == nil {
+		return
+	}
+	delay := af.MaxAckDelay
+	if delay == 0 {
+		delay = c.rttStats.MinRTT() / 4
+	}
+	delay = min(max(delay, *c.peerParams.MinAckDelay, protocol.TimerGranularity), ackhandler.MaxAckDelay, c.peerParams.MaxAckDelay)
+	c.queueControlFrame(&wire.AckFrequencyFrame{
+		AckElicitingThreshold: af.AckElicitingThreshold,
+		RequestMaxAckDelay:    delay,
+		ReorderingThreshold:   protocol.PacketNumber(af.ReorderingThreshold),
+	})
+	c.sentPacketHandler.SetPacketThreshold(protocol.PacketNumber(af.ReorderingThreshold))
+}
+
+func (c *Conn) handleAckFrequencyFrame(f *wire.AckFrequencyFrame) error {
+	if f.RequestMaxAckDelay < minAckDelay {
+		return &qerr.TransportError{
+			ErrorCode:    qerr.ProtocolViolation,
+			FrameType:    uint64(wire.FrameTypeAckFrequency),
+			ErrorMessage: fmt.Sprintf("requested max ack delay %s below min_ack_delay %s", f.RequestMaxAckDelay, minAckDelay),
+		}
+	}
+	c.receivedPacketHandler.SetAckFrequency(f)
 	return nil
 }
 
@@ -1973,6 +2021,10 @@ func (c *Conn) handleFrame(
 		err = c.connIDGenerator.Retire(frame.SequenceNumber, destConnID, rcvTime.Add(3*c.rttStats.PTO(false)))
 	case *wire.HandshakeDoneFrame:
 		err = c.handleHandshakeDoneFrame(rcvTime)
+	case *wire.AckFrequencyFrame:
+		err = c.handleAckFrequencyFrame(frame)
+	case *wire.ImmediateAckFrame:
+		c.receivedPacketHandler.ImmediateAck()
 	default:
 		err = fmt.Errorf("unexpected frame type: %s", reflect.ValueOf(&frame).Elem().Type().Name())
 	}

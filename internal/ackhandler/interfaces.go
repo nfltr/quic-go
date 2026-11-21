@@ -36,4 +36,6 @@ type SentPacketHandler interface {
 	OnLossDetectionTimeout(now monotime.Time) error
 
 	MigratedPath(now monotime.Time, initialMaxPacketSize protocol.ByteCount)
+	// SetPacketThreshold sets the 1-RTT packet threshold of loss detection.
+	SetPacketThreshold(protocol.PacketNumber)
 }

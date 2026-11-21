@@ -67,6 +67,18 @@ func TestConfigValidation(t *testing.T) {
 	})
 }
 
+func TestConfigValidationAckFrequency(t *testing.T) {
+	for _, af := range []AckFrequency{
+		{ReorderingThreshold: 0},
+		{AckElicitingThreshold: 10, ReorderingThreshold: 10},
+		{AckElicitingThreshold: 1, ReorderingThreshold: 3, MaxAckDelay: 26 * time.Millisecond},
+		{AckElicitingThreshold: 1, ReorderingThreshold: 3, MaxAckDelay: -1},
+	} {
+		require.Error(t, validateConfig(&Config{AckFrequency: &af}), "%+v", af)
+	}
+	require.NoError(t, validateConfig(&Config{AckFrequency: &AckFrequency{AckElicitingThreshold: 9, ReorderingThreshold: 10}}))
+}
+
 func TestConfigHandshakeIdleTimeout(t *testing.T) {
 	c := &Config{HandshakeIdleTimeout: time.Second * 11 / 2}
 	require.Equal(t, 11*time.Second, c.handshakeTimeout())
@@ -130,6 +142,8 @@ func configWithNonZeroNonFunctionFields(t *testing.T) *Config {
 			f.Set(reflect.ValueOf(true))
 		case "EnableStreamResetPartialDelivery":
 			f.Set(reflect.ValueOf(true))
+		case "AckFrequency":
+			f.Set(reflect.ValueOf(&AckFrequency{AckElicitingThreshold: 9, ReorderingThreshold: 10, MaxAckDelay: time.Millisecond}))
 		default:
 			t.Fatalf("all fields must be accounted for, but saw unknown field %q", fn)
 		}

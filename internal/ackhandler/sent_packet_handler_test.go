@@ -689,15 +689,15 @@ func TestSentPacketHandlerSetPacketThreshold(t *testing.T) {
 		sph.SentPacket(now, pn, protocol.InvalidPacketNumber, nil, []Frame{packets.NewPingFrame(pn)}, protocol.Encryption1RTT, protocol.ECNNon, 1000, false, false)
 		pns[i] = pn
 	}
-	now = now.Add(time.Second)
-	_, err := sph.ReceivedAck(&wire.AckFrame{AckRanges: ackRanges(pns[3:]...)}, protocol.Encryption1RTT, now)
-	require.NoError(t, err)
 	var want []protocol.PacketNumber
 	for _, pn := range pns[:3] {
 		if pns[11]-pn >= 10 {
 			want = append(want, pn)
 		}
 	}
+	now = now.Add(time.Second)
+	_, err := sph.ReceivedAck(&wire.AckFrame{AckRanges: ackRanges(pns[3:]...)}, protocol.Encryption1RTT, now)
+	require.NoError(t, err)
 	require.Equal(t, want, packets.Lost)
 }
 

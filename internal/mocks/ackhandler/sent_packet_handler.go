@@ -601,6 +601,42 @@ func (c *MockSentPacketHandlerSetMaxDatagramSizeCall) DoAndReturn(f func(protoco
 	return c
 }
 
+// SetPacketThreshold mocks base method.
+func (m *MockSentPacketHandler) SetPacketThreshold(arg0 protocol.PacketNumber) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetPacketThreshold", arg0)
+}
+
+// SetPacketThreshold indicates an expected call of SetPacketThreshold.
+func (mr *MockSentPacketHandlerMockRecorder) SetPacketThreshold(arg0 any) *MockSentPacketHandlerSetPacketThresholdCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetPacketThreshold", reflect.TypeOf((*MockSentPacketHandler)(nil).SetPacketThreshold), arg0)
+	return &MockSentPacketHandlerSetPacketThresholdCall{Call: call}
+}
+
+// MockSentPacketHandlerSetPacketThresholdCall wrap *gomock.Call
+type MockSentPacketHandlerSetPacketThresholdCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockSentPacketHandlerSetPacketThresholdCall) Return() *MockSentPacketHandlerSetPacketThresholdCall {
+	c.Call = c.Call.Return()
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockSentPacketHandlerSetPacketThresholdCall) Do(f func(protocol.PacketNumber)) *MockSentPacketHandlerSetPacketThresholdCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockSentPacketHandlerSetPacketThresholdCall) DoAndReturn(f func(protocol.PacketNumber)) *MockSentPacketHandlerSetPacketThresholdCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // TimeUntilSend mocks base method.
 func (m *MockSentPacketHandler) TimeUntilSend() monotime.Time {
 	m.ctrl.T.Helper()

@@ -92,7 +92,13 @@ type sentPacketHandler struct {
 	// In the application-data packet number space, packet threshold loss detection is
 	// disabled when spurious losses are detected.
 	packetThresholdDisabled bool
-	timeThresholdEighths    uint8
+	// appDataPacketThreshold is the 1-RTT packet threshold: packetThreshold,
+	// or the Reordering Threshold this side asked its peer for in
+	// ACK_FREQUENCY (SetPacketThreshold; draft-ietf-quic-ack-frequency
+	// section 9), so a reordering the peer does not report at once is not
+	// declared lost either.
+	appDataPacketThreshold protocol.PacketNumber
+	timeThresholdEighths   uint8
 	// Only packets sent after a time-threshold increase can trigger another one.
 	minPNToRelaxReordering protocol.PacketNumber
 
@@ -165,6 +171,7 @@ func NewSentPacketHandler(
 		pns:                            newPacketNumberGenerator(initialPN, skipPacketInitialPeriod, skipPacketMaxPeriod),
 		hist:                           *newSentPacketHistory(),
 		timeThresholdEighths:           defaultTimeThresholdEighths,
+		appDataPacketThreshold:         packetThreshold,
 		minPNToRelaxReordering:         protocol.InvalidPacketNumber,
 		handshakePNs: &handshakePacketNumbers{
 			Initial:   make([]protocol.PacketNumber, 0, 4),
@@ -227,13 +234,20 @@ func (h *sentPacketHandler) flushCongestionEvent(priorInFlight protocol.ByteCoun
 	h.ackedInfo, h.lostInfo = h.ackedInfo[:0], h.lostInfo[:0]
 }
 
+// SetPacketThreshold sets the 1-RTT packet threshold (at least
+// packetThreshold): the Reordering Threshold sent in ACK_FREQUENCY.
+func (h *sentPacketHandler) SetPacketThreshold(n protocol.PacketNumber) {
+	h.appDataPacketThreshold = max(n, packetThreshold)
+	h.qlogRecoveryParametersSet(false)
+}
+
 func (h *sentPacketHandler) qlogRecoveryParametersSet(initial bool) {
 	if h.qlogger == nil {
 		return
 	}
 	ev := qlog.RecoveryParametersSet{
 		EncryptionLevel:         protocol.Encryption1RTT,
-		ReorderingThreshold:     packetThreshold,
+		ReorderingThreshold:     uint16(min(h.appDataPacketThreshold, 1<<16-1)),
 		PacketThresholdDisabled: h.packetThresholdDisabled,
 		TimeThreshold:           float64(8+h.timeThresholdEighths) / 8,
 		TimerGranularity:        protocol.TimerGranularity,
@@ -917,6 +931,10 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 	pnSpace.lossTime = 0
 	space := encLevel.PacketNumberSpace()
 	usePacketThreshold := space != protocol.PacketNumberSpaceAppData || !h.packetThresholdDisabled
+	pnThreshold := protocol.PacketNumber(packetThreshold)
+	if space == protocol.PacketNumberSpaceAppData {
+		pnThreshold = h.appDataPacketThreshold
+	}
 	timeThresholdEighths := uint8(defaultTimeThresholdEighths)
 	if space == protocol.PacketNumberSpaceAppData {
 		timeThresholdEighths = h.timeThresholdEighths
@@ -969,7 +987,7 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 					})
 				}
 			}
-		} else if usePacketThreshold && distance >= packetThreshold {
+		} else if usePacketThreshold && distance >= pnThreshold {
 			packetLost = true
 			if !p.isPathProbePacket && p.IsAckEliciting() {
 				if h.logger.Debug() {

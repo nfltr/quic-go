@@ -10,8 +10,6 @@ import (
 	"github.com/nfltr/quic-go/internal/wire"
 )
 
-const reorderingThreshold = 1
-
 // The receivedPacketTracker tracks packets for the Initial and Handshake packet number space.
 // Every received packet is acknowledged immediately.
 type receivedPacketTracker struct {
@@ -78,26 +76,26 @@ func (h *receivedPacketTracker) IsPotentiallyDuplicate(pn protocol.PacketNumber)
 // MaxAckDelay is the maximum time by which we delay sending ACKs.
 const MaxAckDelay = 25 * time.Millisecond
 
-// number of ack-eliciting packets received before sending an ACK
-const packetsBeforeAck = 2
+// ackPolicy is when the 1-RTT receiver acknowledges (draft-ietf-quic-ack-frequency
+// section 6): after more than threshold ack-eliciting packets, maxDelay
+// after the oldest one not yet acknowledged, and at once for a hole
+// reordering packets deep or a packet that many below the largest
+// acknowledged (0: never for reordering). The default is RFC 9000's; the
+// peer's ACK_FREQUENCY frame replaces it (SetAckFrequency). Every ACK costs
+// a packet each way, and on hosts without UDP offloads (macOS) a send and a
+// receive syscall: acking every second packet cost about a quarter of
+// quic-go's CPU per MB of a bulk transfer, and acking every reordered
+// packet a third of both ends' CPU on a reordering WAN path (nfltr
+// docs/decisions/send-cpu-per-gib-2026-11-21.md). Model and guard:
+// github.com/nfltr/link spec/AckFrequency.tla,
+// TestAckFrequencyPolicyInvariants.
+type ackPolicy struct {
+	threshold  int
+	maxDelay   time.Duration
+	reordering protocol.PacketNumber
+}
 
-// ACK decimation (nfltr fork): once ackDecimationAfter ack-eliciting
-// packets have arrived and the RTT is known, send an ACK every
-// packetsBeforeAckDecimated ack-eliciting packets, or a quarter of the min
-// RTT (at least the timer granularity, at most max_ack_delay) after the
-// first one not yet acknowledged, as Chromium's QUIC does. Every ACK
-// costs a packet each way, and on hosts without UDP offloads (macOS) a
-// send and a receive syscall and the wake-ups behind them: acking every
-// second packet cost about a quarter of quic-go's CPU per MB of a bulk
-// transfer on macOS. A missing packet, reordering and ECN-CE are still
-// acknowledged at once (shouldQueueACK), so loss detection keeps its
-// pace. Receiver-only: no wire change, max_ack_delay is still honoured.
-// Guard: TestAppDataReceivedPacketTrackerDecimation; the gain:
-// github.com/nfltr/link peerlink/quiclink BenchmarkBulkCPU.
-const (
-	ackDecimationAfter        = 100
-	packetsBeforeAckDecimated = 10
-)
+var defaultAckPolicy = ackPolicy{threshold: 1, maxDelay: MaxAckDelay, reordering: 1}
 
 // The appDataReceivedPacketTracker tracks packets received in the Application Data packet number space.
 // It waits until at least 2 packets were received before queueing an ACK, or until the max_ack_delay was reached.
@@ -114,8 +112,8 @@ type appDataReceivedPacketTracker struct {
 	ackElicitingPacketsReceivedSinceLastAck int
 	ackAlarm                                monotime.Time
 
-	ackElicitingPacketsReceived int
-	rttStats                    *utils.RTTStats // nil: no ACK decimation
+	policy    ackPolicy
+	policySeq int64 // the largest ACK_FREQUENCY sequence number applied (-1: none)
 
 	logger utils.Logger
 }
@@ -123,6 +121,8 @@ type appDataReceivedPacketTracker struct {
 func newAppDataReceivedPacketTracker(logger utils.Logger) *appDataReceivedPacketTracker {
 	h := &appDataReceivedPacketTracker{
 		receivedPacketTracker: *newReceivedPacketTracker(),
+		policy:                defaultAckPolicy,
+		policySeq:             -1,
 		logger:                logger,
 	}
 	return h
@@ -140,34 +140,47 @@ func (h *appDataReceivedPacketTracker) ReceivedPacket(pn protocol.PacketNumber, 
 		return nil
 	}
 	h.ackElicitingPacketsReceivedSinceLastAck++
-	h.ackElicitingPacketsReceived++
-	isMissing := h.isMissing(pn)
-	if !h.ackQueued && h.shouldQueueACK(pn, ecn, isMissing) {
+	if !h.ackQueued && h.shouldQueueACK(pn, ecn) {
 		h.ackQueued = true
 		h.ackAlarm = 0 // cancel the ack alarm
 	}
-	if !h.ackQueued && (h.ackAlarm.IsZero() || !h.decimating()) {
-		// No ACK queued, but we'll need to acknowledge the packet after the ACK delay
-		// (decimating: counted from the first packet not yet acknowledged).
-		delay := h.ackDelay()
-		h.ackAlarm = rcvTime.Add(delay)
+	if !h.ackQueued && h.ackAlarm.IsZero() {
+		// No ACK queued: acknowledge the oldest packet not yet acknowledged
+		// after the ACK delay.
+		h.ackAlarm = rcvTime.Add(h.policy.maxDelay)
 		if h.logger.Debug() {
-			h.logger.Debugf("\tSetting ACK timer to %s", delay)
+			h.logger.Debugf("\tSetting ACK timer to %s", h.policy.maxDelay)
 		}
 	}
 	return nil
 }
 
-func (h *appDataReceivedPacketTracker) decimating() bool {
-	return h.rttStats != nil && h.rttStats.HasMeasurement() && h.ackElicitingPacketsReceived > ackDecimationAfter
+// SetAckFrequency applies the peer's ACK_FREQUENCY frame, unless one with
+// this or a larger sequence number was applied already. The connection
+// checked its Requested Max Ack Delay against our min_ack_delay.
+func (h *appDataReceivedPacketTracker) SetAckFrequency(f *wire.AckFrequencyFrame) {
+	if int64(f.SequenceNumber) <= h.policySeq {
+		return
+	}
+	h.policySeq = int64(f.SequenceNumber)
+	old := h.policy
+	h.policy = ackPolicy{
+		threshold:  int(min(f.AckElicitingThreshold, 1<<20)),
+		maxDelay:   f.RequestMaxAckDelay,
+		reordering: f.ReorderingThreshold,
+	}
+	if h.ackElicitingPacketsReceivedSinceLastAck > h.policy.threshold {
+		h.ackQueued = true
+	}
+	if !h.ackAlarm.IsZero() && h.policy.maxDelay < old.maxDelay {
+		h.ackAlarm = h.ackAlarm.Add(h.policy.maxDelay - old.maxDelay)
+	}
 }
 
-// ackDelay is how long an ack-eliciting packet may wait for its ACK.
-func (h *appDataReceivedPacketTracker) ackDelay() time.Duration {
-	if !h.decimating() {
-		return MaxAckDelay
-	}
-	return min(max(h.rttStats.MinRTT()/4, protocol.TimerGranularity), MaxAckDelay)
+// ImmediateAck handles an IMMEDIATE_ACK frame: an ACK at once.
+func (h *appDataReceivedPacketTracker) ImmediateAck() {
+	h.ackQueued = true
+	h.ackAlarm = 0
 }
 
 // IgnoreBelow sets a lower limit for acknowledging packets.
@@ -183,61 +196,44 @@ func (h *appDataReceivedPacketTracker) IgnoreBelow(pn protocol.PacketNumber) {
 	}
 }
 
-// isMissing says if a packet was reported missing in the last ACK.
-func (h *appDataReceivedPacketTracker) isMissing(p protocol.PacketNumber) bool {
-	if h.lastAck == nil || p < h.ignoreBelow {
-		return false
-	}
-	return p < h.lastAck.LargestAcked() && !h.lastAck.AcksPacket(p)
-}
-
+// hasNewMissingPackets says if a hole is now h.policy.reordering below the
+// largest packet received and the last ACK did not report it that deep
+// (draft-ietf-quic-ack-frequency section 6.2: Unreported Missing). Before
+// the first ACK none: the 1-RTT packet numbers follow the handshake's in
+// one space, so the numbers below the first 1-RTT packet look missing.
 func (h *appDataReceivedPacketTracker) hasNewMissingPackets() bool {
-	if h.lastAck == nil {
+	r := h.policy.reordering
+	if h.lastAck == nil || h.largestObserved < r {
 		return false
 	}
-	if h.largestObserved < reorderingThreshold {
+	highestMissing := h.packetHistory.HighestMissingUpTo(h.largestObserved - r)
+	if highestMissing == protocol.InvalidPacketNumber || highestMissing < h.ignoreBelow {
 		return false
 	}
-	highestMissing := h.packetHistory.HighestMissingUpTo(h.largestObserved - reorderingThreshold)
-	if highestMissing == protocol.InvalidPacketNumber {
-		return false
-	}
-	if highestMissing < h.lastAck.LargestAcked() {
-		// the packet was already reported missing in the last ACK
-		return false
-	}
-	return highestMissing > h.lastAck.LargestAcked()-reorderingThreshold
+	return highestMissing+r > h.lastAck.LargestAcked()
 }
 
-func (h *appDataReceivedPacketTracker) shouldQueueACK(pn protocol.PacketNumber, ecn protocol.ECN, wasMissing bool) bool {
-	// Send an ACK if this packet was reported missing in an ACK sent before.
-	// Ack decimation with reordering relies on the timer to send an ACK, but if
-	// missing packets we reported in the previous ACK, send an ACK immediately.
-	if wasMissing {
+func (h *appDataReceivedPacketTracker) shouldQueueACK(pn protocol.PacketNumber, ecn protocol.ECN) bool {
+	if h.ackElicitingPacketsReceivedSinceLastAck > h.policy.threshold {
 		if h.logger.Debug() {
-			h.logger.Debugf("\tQueueing ACK because packet %d was missing before.", pn)
+			h.logger.Debugf("\tQueueing ACK because %d packets were received after the last ACK (threshold: %d).", h.ackElicitingPacketsReceivedSinceLastAck, h.policy.threshold)
 		}
 		return true
 	}
-
-	// send an ACK every 2 ack-eliciting packets (decimating: every 10)
-	threshold := packetsBeforeAck
-	if h.decimating() {
-		threshold = packetsBeforeAckDecimated
-	}
-	if h.ackElicitingPacketsReceivedSinceLastAck >= threshold {
-		if h.logger.Debug() {
-			h.logger.Debugf("\tQueueing ACK because packet %d packets were received after the last ACK (using initial threshold: %d).", h.ackElicitingPacketsReceivedSinceLastAck, packetsBeforeAck)
+	if r := h.policy.reordering; r > 0 {
+		// A packet r or more below the largest acknowledged: the peer may
+		// have declared it lost.
+		if h.lastAck != nil && pn+r <= h.lastAck.LargestAcked() {
+			if h.logger.Debug() {
+				h.logger.Debugf("\tQueueing ACK because packet %d arrived %d or more below the largest acknowledged.", pn, r)
+			}
+			return true
 		}
-		return true
+		if h.hasNewMissingPackets() {
+			h.logger.Debugf("\tQueuing ACK because there's a new missing packet to report.")
+			return true
+		}
 	}
-
-	// queue an ACK if there are new missing packets to report
-	if h.hasNewMissingPackets() {
-		h.logger.Debugf("\tQueuing ACK because there's a new missing packet to report.")
-		return true
-	}
-
 	// queue an ACK if the packet was ECN-CE marked
 	if ecn == protocol.ECNCE {
 		h.logger.Debugf("\tQueuing ACK because the packet was ECN-CE marked.")

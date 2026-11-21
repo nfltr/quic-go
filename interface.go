@@ -191,8 +191,31 @@ type Config struct {
 	// Enable QUIC Stream Resets with Partial Delivery.
 	// See https://datatracker.ietf.org/doc/html/draft-ietf-quic-reliable-stream-reset-09.
 	EnableStreamResetPartialDelivery bool
+	// AckFrequency enables the QUIC Acknowledgment Frequency extension
+	// (draft-ietf-quic-ack-frequency-14): this side advertises min_ack_delay,
+	// so the peer may ask it for its ACK rate, and once the handshake is
+	// confirmed asks a peer that advertised it for this policy, using the
+	// Reordering Threshold as its own packet threshold of loss detection.
+	// nil: neither (RFC 9000's ACKs).
+	AckFrequency *AckFrequency
 
 	Tracer func(ctx context.Context, isClient bool, connID ConnectionID) qlogwriter.Trace
+}
+
+// AckFrequency is the ACK policy a side asks its peer for in an ACK_FREQUENCY
+// frame (draft-ietf-quic-ack-frequency section 4).
+type AckFrequency struct {
+	// AckElicitingThreshold: the peer acknowledges after more than this many
+	// ack-eliciting packets (0: every one). Below ReorderingThreshold.
+	AckElicitingThreshold uint64
+	// ReorderingThreshold: the peer acknowledges at once a hole this many
+	// packets deep, or a packet this many below the largest it acknowledged;
+	// reordering within it waits for the threshold or the delay. At least 1.
+	ReorderingThreshold uint64
+	// MaxAckDelay: how long the peer may wait to acknowledge an ack-eliciting
+	// packet, at most 25 ms (and at least the peer's min_ack_delay). 0: a
+	// quarter of the min RTT when the frame is sent.
+	MaxAckDelay time.Duration
 }
 
 // CongestionControl is a sender congestion control algorithm.
@@ -234,6 +257,12 @@ type ConnectionState struct {
 	SupportsStreamResetPartialDelivery struct {
 		// Remote is true if the peer advertised support.
 		// Local is true if support was enabled via Config.EnableStreamResetPartialDelivery.
+		Remote, Local bool
+	}
+	// SupportsAckFrequency indicates support for the ACK Frequency extension.
+	SupportsAckFrequency struct {
+		// Remote is true if the peer advertised min_ack_delay.
+		// Local is true if Config.AckFrequency is set.
 		Remote, Local bool
 	}
 	// Used0RTT says if 0-RTT resumption was used.

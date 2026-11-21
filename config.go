@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/nfltr/quic-go/internal/ackhandler"
 	"github.com/nfltr/quic-go/internal/protocol"
 	"github.com/nfltr/quic-go/quicvarint"
 )
@@ -51,6 +52,14 @@ func validateConfig(config *Config) error {
 	}
 	if config.InitialPacketSize > protocol.MaxPacketBufferSize {
 		config.InitialPacketSize = protocol.MaxPacketBufferSize
+	}
+	if af := config.AckFrequency; af != nil {
+		if af.ReorderingThreshold < 1 || af.AckElicitingThreshold >= af.ReorderingThreshold {
+			return fmt.Errorf("invalid AckFrequency: need 1 <= ReorderingThreshold (%d) and AckElicitingThreshold (%d) below it", af.ReorderingThreshold, af.AckElicitingThreshold)
+		}
+		if af.MaxAckDelay < 0 || af.MaxAckDelay > ackhandler.MaxAckDelay {
+			return fmt.Errorf("invalid AckFrequency: MaxAckDelay %s not in [0, %s]", af.MaxAckDelay, ackhandler.MaxAckDelay)
+		}
 	}
 	// check that all QUIC versions are actually supported
 	for _, v := range config.Versions {
@@ -127,6 +136,7 @@ func populateConfig(config *Config) *Config {
 		InitialPacketSize:                config.InitialPacketSize,
 		DisablePathMTUDiscovery:          config.DisablePathMTUDiscovery,
 		EnableStreamResetPartialDelivery: config.EnableStreamResetPartialDelivery,
+		AckFrequency:                     config.AckFrequency,
 		Allow0RTT:                        config.Allow0RTT,
 		Tracer:                           config.Tracer,
 	}
