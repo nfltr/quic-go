@@ -128,8 +128,9 @@ func (h *sentPacketHandler) traceAck(ack *wire.AckFrame, ackTime monotime.Time) 
 }
 
 var (
-	drops     sync.Map // reason -> *atomic.Uint64
-	dropsFile = sync.OnceValue(func() *os.File {
+	traceStart = time.Now() // t in drops-*.ndjson: seconds since, as GODEBUG=gctrace=1's @
+	drops      sync.Map     // reason -> *atomic.Uint64
+	dropsFile  = sync.OnceValue(func() *os.File {
 		dir := os.Getenv("QUICLOSSTRACE")
 		if dir == "" {
 			return nil
@@ -144,7 +145,7 @@ var (
 // receive queue), dup (1-RTT, below what the history still holds or
 // already in it), evict (a range the history dropped past MaxNumAckRanges;
 // pn: its highest packet). A line per dup and evict, and at 1, 2, 4, ...
-// and every 1024 of a reason.
+// and every 1024 of a reason; t: seconds since the process started.
 func TraceDrop(why string, pn protocol.PacketNumber) {
 	f := dropsFile()
 	if f == nil {
@@ -153,6 +154,6 @@ func TraceDrop(why string, pn protocol.PacketNumber) {
 	c, _ := drops.LoadOrStore(why, new(atomic.Uint64))
 	n := c.(*atomic.Uint64).Add(1)
 	if why != "queue" || n&(n-1) == 0 || n%1024 == 0 {
-		fmt.Fprintf(f, "{\"ev\":\"Drop\",\"why\":%q,\"n\":%d,\"pn\":%d}\n", why, n, pn)
+		fmt.Fprintf(f, "{\"ev\":\"Drop\",\"why\":%q,\"n\":%d,\"pn\":%d,\"t\":%.3f}\n", why, n, pn, time.Since(traceStart).Seconds())
 	}
 }
