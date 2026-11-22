@@ -1,6 +1,7 @@
 package ackhandler
 
 import (
+	"math/rand/v2"
 	"testing"
 	"time"
 
@@ -302,4 +303,90 @@ func TestAppDataReceivedPacketTrackerImmediateAck(t *testing.T) {
 	require.Nil(t, tr.GetAckFrame(now, true))
 	tr.ImmediateAck()
 	require.NotNil(t, tr.GetAckFrame(now, true))
+}
+
+// More holes open than the history's MaxNumAckRanges ranges (lane SPURIOUS:
+// a path delivering half the packets hundreds of places late): every packet
+// received since the last ACK is in the next ACK, also one below the lowest
+// range the history keeps (it dropped that one at once) or in a low range
+// that only fits if others give way, in at most MaxNumAckRanges valid ranges.
+// github.com/nfltr/link spec/AckRanges.tla ReportedOnce.
+func TestReceivedPacketTrackerReportsLatePacketsBelowTheRanges(t *testing.T) {
+	tracker := newReceivedPacketTracker()
+	const holes = 2 * protocol.MaxNumAckRanges
+	for pn := protocol.PacketNumber(0); pn < 2*holes; pn += 2 {
+		require.NoError(t, tracker.ReceivedPacket(pn, protocol.ECNNon, true))
+	}
+	ack := tracker.GetAckFrame()
+	require.Len(t, ack.AckRanges, protocol.MaxNumAckRanges)
+	lowest := ack.LowestAcked()
+
+	late := []protocol.PacketNumber{5, 7, lowest + 1, 2*holes - 3, 2 * holes}
+	for _, pn := range late {
+		require.False(t, tracker.IsPotentiallyDuplicate(pn))
+		require.NoError(t, tracker.ReceivedPacket(pn, protocol.ECNNon, true))
+	}
+	ack = tracker.GetAckFrame()
+	require.NotNil(t, ack)
+	for _, pn := range late {
+		require.True(t, ack.AcksPacket(pn), "packet %d", pn)
+	}
+	require.LessOrEqual(t, len(ack.AckRanges), protocol.MaxNumAckRanges)
+	require.Equal(t, protocol.PacketNumber(2*holes), ack.LargestAcked())
+	b, err := ack.Append(nil, protocol.Version1)
+	require.NoError(t, err)
+	parsed, _, err := wire.NewFrameParser(false, false, false).ParseAckFrame(wire.FrameTypeAck, b[1:], protocol.Encryption1RTT, protocol.Version1)
+	require.NoError(t, err)
+	require.Equal(t, ack.AckRanges, parsed.AckRanges)
+}
+
+// github.com/nfltr/link spec/AckRanges.tla's invariants on the real tracker:
+// packets delivered up to 300 places late, one in ten lost, an ACK after
+// every 10: each ACK acknowledges every packet received since the last one
+// (ReportedOnce), only received ones (AckedReceived), in at most
+// MaxNumAckRanges valid ranges (FrameBound).
+func TestReceivedPacketTrackerReportedOnce(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1, 2))
+	tracker := newReceivedPacketTracker()
+	const n = 20000
+	order := make([]protocol.PacketNumber, 0, n)
+	for pn := protocol.PacketNumber(0); pn < n; pn++ {
+		if rng.IntN(10) > 0 {
+			order = append(order, pn)
+		}
+	}
+	for i := range order { // half of them up to 300 places late
+		if j := i + rng.IntN(300); rng.IntN(2) == 0 && j < len(order) {
+			order[i], order[j] = order[j], order[i]
+		}
+	}
+	received := map[protocol.PacketNumber]bool{}
+	var fresh []protocol.PacketNumber
+	for i, pn := range order {
+		if tracker.IsPotentiallyDuplicate(pn) {
+			continue
+		}
+		require.NoError(t, tracker.ReceivedPacket(pn, protocol.ECNNon, true))
+		received[pn] = true
+		fresh = append(fresh, pn)
+		if i%10 != 9 {
+			continue
+		}
+		ack := tracker.GetAckFrame()
+		require.LessOrEqual(t, len(ack.AckRanges), protocol.MaxNumAckRanges)
+		for _, p := range fresh {
+			require.True(t, ack.AcksPacket(p), "packet %d", p)
+		}
+		for _, r := range ack.AckRanges {
+			for p := r.Smallest; p <= r.Largest; p++ {
+				require.True(t, received[p], "packet %d acknowledged, not received", p)
+			}
+		}
+		b, err := ack.Append(nil, protocol.Version1)
+		require.NoError(t, err)
+		parsed, _, err := wire.NewFrameParser(false, false, false).ParseAckFrame(wire.FrameTypeAck, b[1:], protocol.Encryption1RTT, protocol.Version1)
+		require.NoError(t, err)
+		require.Equal(t, ack.AckRanges, parsed.AckRanges)
+		fresh = fresh[:0]
+	}
 }

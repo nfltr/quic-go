@@ -87,6 +87,9 @@ type reorderCase struct {
 	maxAcks float64
 	// maxLate: the most packet times a reordered packet is held (0: 10).
 	maxLate int
+	// maxLost: the most packets the sender may declare lost, as a fraction
+	// of those it sent (0: report only).
+	maxLost float64
 }
 
 // nfltr's direct-path ACK policy (link peerlink/quiclink): an ACK every 10
@@ -109,27 +112,34 @@ var quiclinkAcks = &quic.AckFrequency{AckElicitingThreshold: 9, ReorderingThresh
 func TestBulkUploadOnReorderingPath(t *testing.T) {
 	reno, bbr := quic.CongestionControlReno, quic.CongestionControlBBR
 	for _, c := range []reorderCase{
-		{"reno/clean", reno, 0, 0, 0.85, nil, 0, 0},
-		{"reno/reorder", reno, 0.3, 0, 0.85, nil, 0, 0},
-		{"reno/loss", reno, 0, 0.0005, 0, nil, 0, 0},
-		{"reno/reorder+loss", reno, 0.3, 0.0005, 0, nil, 0, 0},
-		{"bbr/clean", bbr, 0, 0, 0.85, nil, 0, 0},
-		{"bbr/reorder", bbr, 0.3, 0, 0.85, nil, 0, 0},
-		{"bbr/loss", bbr, 0, 0.0005, 0.5, nil, 0, 0},
-		{"bbr/reorder+loss", bbr, 0.3, 0.0005, 0.5, nil, 0, 0},
+		{"reno/clean", reno, 0, 0, 0.85, nil, 0, 0, 0},
+		{"reno/reorder", reno, 0.3, 0, 0.85, nil, 0, 0, 0},
+		{"reno/loss", reno, 0, 0.0005, 0, nil, 0, 0, 0},
+		{"reno/reorder+loss", reno, 0.3, 0.0005, 0, nil, 0, 0, 0},
+		{"bbr/clean", bbr, 0, 0, 0.85, nil, 0, 0, 0},
+		{"bbr/reorder", bbr, 0.3, 0, 0.85, nil, 0, 0, 0},
+		{"bbr/loss", bbr, 0, 0.0005, 0.5, nil, 0, 0, 0},
+		{"bbr/reorder+loss", bbr, 0.3, 0.0005, 0.5, nil, 0, 0, 0},
 		// ACK_FREQUENCY (lane SPEED-ACK): reordering within 10 places forces
 		// no ACK, so the receiver sends one per 10 packets instead of about
 		// one per 2-3, at the same rate.
-		{"bbr/clean/ackfreq", bbr, 0, 0, 0.85, quiclinkAcks, 0.12, 0},
-		{"bbr/reorder/ackfreq", bbr, 0.3, 0, 0.85, quiclinkAcks, 0.12, 0},
-		{"bbr/reorder+loss/ackfreq", bbr, 0.3, 0.0005, 0.5, quiclinkAcks, 0.15, 0},
+		{"bbr/clean/ackfreq", bbr, 0, 0, 0.85, quiclinkAcks, 0.12, 0, 0},
+		{"bbr/reorder/ackfreq", bbr, 0.3, 0, 0.85, quiclinkAcks, 0.12, 0, 0},
+		{"bbr/reorder+loss/ackfreq", bbr, 0.3, 0.0005, 0.5, quiclinkAcks, 0.15, 0, 0},
 		// Reordering past the Reordering Threshold (up to 40 places, lane
 		// ACKFIX): the first spurious loss turns the sender's packet
 		// threshold off, and it asks again for Reordering Threshold 0, so
 		// the receiver stops acking each deep-late packet at once (one
 		// request at the handshake: 0.3 ACKs per data packet on Helsinki ->
 		// Singapore, lane REORDERWAN).
-		{"bbr/deep-reorder/ackfreq", bbr, 0.3, 0, 0.5, quiclinkAcks, 0.12, 40},
+		{"bbr/deep-reorder/ackfreq", bbr, 0.3, 0, 0.5, quiclinkAcks, 0.12, 40, 0},
+		// Half the packets late by up to 400 places (lane SPURIOUS: Helsinki
+		// -> Singapore at 4 connections, 44-50 % late, 100-300 holes open at
+		// once): more holes than the receiver's 64 ACK ranges. A packet
+		// arriving below the lowest range was dropped from the history at
+		// once and never acknowledged, so the sender declared it lost and
+		// resent it (2.6 % of the packets there, wire loss 0.03 %).
+		{"bbr/many-holes/ackfreq", bbr, 0.5, 0, 0.5, quiclinkAcks, 0.15, 400, 0.001},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			testBulkUploadReorder(t, c)
@@ -233,6 +243,9 @@ func testBulkUploadReorder(t *testing.T, c reorderCase) {
 		}
 		if c.maxAcks > 0 {
 			require.LessOrEqual(t, acks, c.maxAcks)
+		}
+		if c.maxLost > 0 {
+			require.LessOrEqual(t, float64(st.PacketsLost), c.maxLost*float64(st.PacketsSent))
 		}
 	})
 }
