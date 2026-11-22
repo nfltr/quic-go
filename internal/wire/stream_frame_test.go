@@ -69,9 +69,9 @@ func TestParseStreamFrameRejectsOverflow(t *testing.T) {
 }
 
 func TestParseStreamFrameRejectsLongFrames(t *testing.T) {
-	data := encodeVarInt(0x12345)                                                // stream ID
-	data = append(data, encodeVarInt(uint64(protocol.MaxPacketBufferSize)+1)...) // data length
-	data = append(data, make([]byte, protocol.MaxPacketBufferSize+1)...)
+	data := encodeVarInt(0x12345)                                               // stream ID
+	data = append(data, encodeVarInt(uint64(protocol.MaxJumboPacketSize)+1)...) // data length
+	data = append(data, make([]byte, protocol.MaxJumboPacketSize+1)...)
 	_, _, err := ParseStreamFrame(data, 0x8^0x2, protocol.Version1)
 	require.ErrorIs(t, err, io.EOF)
 }
@@ -109,6 +109,25 @@ func TestParseStreamUsesBufferForLongFrames(t *testing.T) {
 	require.False(t, frame.Fin)
 	require.True(t, frame.fromPool)
 	require.Equal(t, len(data), l)
+	require.NotPanics(t, frame.PutBack)
+}
+
+// TestParseStreamJumboFrame: a STREAM frame over MaxPacketBufferSize (a
+// jumbo packet's) parses into a jumbo pool frame; splitting it leaves
+// the rest in a buffer that holds it.
+func TestParseStreamJumboFrame(t *testing.T) {
+	data := encodeVarInt(0x12345) // stream ID
+	payload := bytes.Repeat([]byte{'j'}, 8000)
+	data = append(data, payload...)
+	frame, l, err := ParseStreamFrame(data, 0x8, protocol.Version1)
+	require.NoError(t, err)
+	require.Equal(t, len(data), l)
+	require.Equal(t, payload, frame.Data)
+	require.True(t, frame.fromPool)
+	first, split := frame.MaybeSplitOffFrame(1000, protocol.Version1)
+	require.True(t, split)
+	require.Equal(t, payload, append(append([]byte{}, first.Data...), frame.Data...))
+	require.NotPanics(t, first.PutBack)
 	require.NotPanics(t, frame.PutBack)
 }
 

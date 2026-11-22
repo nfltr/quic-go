@@ -391,7 +391,6 @@ func TestFaultyPacketConn(t *testing.T) {
 }
 
 func testFaultyPacketConn(t *testing.T, pers protocol.Perspective) {
-	t.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
 
 	synctest.Test(t, func(t *testing.T) {
 		runServer := func(ln *quic.Listener) error {

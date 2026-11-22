@@ -3,11 +3,7 @@ package quic
 import (
 	"cmp"
 	"io"
-	"log"
 	"net"
-	"os"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -59,31 +55,21 @@ var _ OOBCapablePacketConn = &net.UDPConn{}
 
 // sockOpts are a Transport's socket settings (Transport.sockOpts).
 type sockOpts struct {
-	rcvBuf, sndBuf int  // the buffer sizes to ask for, at least (0: desiredBufferSize)
-	noGSO, noGRO   bool // GSO, GRO off
+	rcvBuf, sndBuf      int                // the buffer sizes to ask for, at least (0: desiredBufferSize)
+	noGSO, noGRO, noECN bool               // GSO, GRO, ECN off
+	readSize            protocol.ByteCount // the largest packet read (0: MaxPacketBufferSize)
+}
+
+// packetSize is o.readSize, 0: MaxPacketBufferSize.
+func (o sockOpts) packetSize() protocol.ByteCount {
+	return max(o.readSize, protocol.MaxPacketBufferSize)
 }
 
 func wrapConn(pc net.PacketConn, o sockOpts) (rawConn, error) {
-	if err := setReceiveBuffer(pc, cmp.Or(o.rcvBuf, desiredBufferSize)); err != nil {
-		if !strings.Contains(err.Error(), "use of closed network connection") {
-			setBufferWarningOnce.Do(func() {
-				if disable, _ := strconv.ParseBool(os.Getenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING")); disable {
-					return
-				}
-				log.Printf("%s. See https://github.com/quic-go/quic-go/wiki/UDP-Buffer-Sizes for details.", err)
-			})
-		}
-	}
-	if err := setSendBuffer(pc, cmp.Or(o.sndBuf, desiredBufferSize)); err != nil {
-		if !strings.Contains(err.Error(), "use of closed network connection") {
-			setBufferWarningOnce.Do(func() {
-				if disable, _ := strconv.ParseBool(os.Getenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING")); disable {
-					return
-				}
-				log.Printf("%s. See https://github.com/quic-go/quic-go/wiki/UDP-Buffer-Sizes for details.", err)
-			})
-		}
-	}
+	// A host giving less than asked is no error: SocketBuffers reports
+	// what it gave.
+	_ = setReceiveBuffer(pc, cmp.Or(o.rcvBuf, desiredBufferSize))
+	_ = setSendBuffer(pc, cmp.Or(o.sndBuf, desiredBufferSize))
 
 	conn, ok := pc.(interface {
 		SyscallConn() (syscall.RawConn, error)
@@ -107,7 +93,7 @@ func wrapConn(pc net.PacketConn, o sockOpts) (rawConn, error) {
 	c, ok := pc.(OOBCapablePacketConn)
 	if !ok {
 		utils.DefaultLogger.Infof("PacketConn is not a net.UDPConn. Disabling optimizations possible on UDP connections.")
-		return &basicConn{PacketConn: pc, supportsDF: supportsDF}, nil
+		return &basicConn{PacketConn: pc, supportsDF: supportsDF, size: o.packetSize()}, nil
 	}
 	return newConn(c, supportsDF, o)
 }
@@ -120,15 +106,17 @@ func wrapConn(pc net.PacketConn, o sockOpts) (rawConn, error) {
 type basicConn struct {
 	net.PacketConn
 	supportsDF bool
+	size       protocol.ByteCount // the largest packet read (0: MaxPacketBufferSize)
 }
 
 var _ rawConn = &basicConn{}
 
 func (c *basicConn) ReadPacket() (receivedPacket, error) {
-	buffer := getPacketBuffer()
-	// The packet size should not exceed protocol.MaxPacketBufferSize bytes
+	size := max(c.size, protocol.MaxPacketBufferSize)
+	buffer := getPacketBufferFor(size)
+	// The packet size should not exceed size bytes
 	// If it does, we only read a truncated packet, which will then end up undecryptable
-	buffer.Data = buffer.Data[:protocol.MaxPacketBufferSize]
+	buffer.Data = buffer.Data[:size]
 	n, addr, err := c.ReadFrom(buffer.Data)
 	if err != nil {
 		return receivedPacket{}, err

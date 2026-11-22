@@ -110,6 +110,13 @@ type StatelessResetToken [16]byte
 // Ethernet's max packet size is 1500 bytes,  1500 - 48 = 1452.
 const MaxPacketBufferSize = 1452
 
+// MaxJumboPacketSize is the largest packet a Transport reads and a
+// connection sends with Transport.MaxPacketSize and Config.MaxPacketSize
+// above MaxPacketBufferSize: a 9000-byte MTU (jumbo frames) less the IPv6
+// and UDP headers. Such packets use buffers of this size of their own, so
+// the default size's buffers stay MaxPacketBufferSize.
+const MaxJumboPacketSize = 9000 - 48
+
 // MaxLargePacketBufferSize is used when using GSO: 44 full-size packets in
 // one sendmsg. Linux caps a GSO send at 64 segments (UDP_MAX_SEGMENTS) and
 // one UDP datagram (65535 bytes less the IPv6 and UDP headers); 20 KiB

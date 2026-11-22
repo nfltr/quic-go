@@ -174,7 +174,6 @@ func TestTransportClose(t *testing.T) {
 	})
 
 	t.Run("connection error", func(t *testing.T) {
-		t.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
 
 		bc := newBrokenConn(newUDPConnLocalhost(t))
 		testTransportClose(t, bc, func() { bc.Break(assert.AnError) }, assert.AnError)

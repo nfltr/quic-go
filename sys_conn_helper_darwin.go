@@ -35,4 +35,4 @@ func parseIPv4PktInfo(body []byte) (ip netip.Addr, ifIndex uint32, ok bool) {
 
 func isGSOEnabled(syscall.RawConn) bool { return false }
 
-func isECNEnabled() bool { return !isECNDisabledUsingEnv() }
+func isECNEnabled() bool { return true }

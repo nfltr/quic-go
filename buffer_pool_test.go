@@ -20,6 +20,15 @@ func TestBufferPoolSizes(t *testing.T) {
 	require.Zero(t, buf2.Len())
 }
 
+// TestBufferPoolJumbo: a packet over MaxPacketBufferSize takes a jumbo
+// buffer, back to its own pool; up to it, the default buffer.
+func TestBufferPoolJumbo(t *testing.T) {
+	require.Equal(t, protocol.MaxPacketBufferSize, cap(getPacketBufferFor(protocol.MaxPacketBufferSize).Data))
+	buf := getPacketBufferFor(protocol.MaxPacketBufferSize + 1)
+	require.Equal(t, protocol.MaxJumboPacketSize, cap(buf.Data))
+	require.NotPanics(t, buf.Release)
+}
+
 func TestBufferPoolRelease(t *testing.T) {
 	buf1 := getPacketBuffer()
 	buf1.Release()

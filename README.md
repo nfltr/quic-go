@@ -52,16 +52,22 @@ the connection sees them (`Transport.DisableGRO` turns it off, as
 `Transport.DisableGSO` does GSO), and a connection queues up to 4096
 received packets not yet processed (256 upstream), eight such reads, so a
 receiver busy for one read no longer drops the rest of it (a peer's
-datagram over 1452 bytes is cut to that, as without GRO, so the queue holds
-at most 4096 x 1452 bytes, ~5.7 MiB); `SocketBuffers` reports the socket
-buffers the host gave (asked: `Transport.ReceiveBufferSize` and
-`SendBufferSize`, 0: `SocketBufferWanted`, 7 MiB), so a program can tell
-its user to raise `net.core.rmem_max`/`wmem_max`. Every speed knob is a
-typed option, none an environment variable: `Config.CongestionControl`,
-`Config.AckFrequency`, `Config.DisablePacing`, `Config.MaxPacketSize`
-(the largest packet path MTU discovery tries, at most 1452, the size of
-the packet buffers), and the Transport's buffer sizes, `DisableGSO` and
-`DisableGRO`.
+datagram over the Transport's `MaxPacketSize`, 1452 bytes by default, is
+cut to that, as without GRO, so the queue holds at most 4096 x 1452 bytes,
+~5.7 MiB, or 4096 x 8952, ~35 MiB, on a jumbo Transport); `SocketBuffers`
+reports the socket buffers the host gave (asked: `Transport.ReceiveBufferSize`
+and `SendBufferSize`, 0: `SocketBufferWanted`, 7 MiB), so a program can tell
+its user to raise `net.core.rmem_max`/`wmem_max`; a host giving less is not
+logged (upstream's warning and `QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING` are
+deleted). Every speed knob is a typed option, none an environment variable:
+`Config.CongestionControl`, `Config.AckFrequency`, `Config.DisablePacing`,
+`Config.MaxPacketSize` (the largest packet path MTU discovery tries, 1200
+to 8952, 0: 1452), and the Transport's buffer sizes, `DisableGSO`,
+`DisableGRO`, `DisableECN` (replaces `QUIC_GO_DISABLE_ECN`, deleted) and
+`MaxPacketSize` (the largest packet it reads, 0: 1452; above that its
+packets and those of connections sending them take jumbo buffers of 8952
+bytes of their own, for 9000-byte MTU paths, so the default buffers stay
+1452; a Config sending more than its Transport reads is refused).
 `master` mirrors upstream.
 
 

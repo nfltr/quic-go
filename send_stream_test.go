@@ -560,6 +560,31 @@ func TestSendStreamLargeWrites(t *testing.T) {
 	})
 }
 
+// TestSendStreamJumboFrames: a frame larger than MaxPacketBufferSize (a
+// jumbo packet's) is popped whole from a large write.
+func TestSendStreamJumboFrames(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const streamID protocol.StreamID = 1337
+		mockCtrl := gomock.NewController(t)
+		mockSender := NewMockStreamSender(mockCtrl)
+		str := newSendStream(context.Background(), streamID, mockSender, newTestStreamFlowControllerWithSendWindow(42, protocol.MaxByteCount), false)
+		mockSender.EXPECT().onHasStreamData(streamID, str).AnyTimes()
+		mockSender.EXPECT().onHasStreamControlFrame(streamID, str).AnyTimes()
+		mockSender.EXPECT().onStreamCompleted(streamID).AnyTimes()
+		data := make([]byte, 20000)
+		rand.Read(data)
+		go func() { str.Write(data) }()
+		synctest.Wait()
+		frame, _, _ := str.popStreamFrame(8000, protocol.Version1)
+		require.NotNil(t, frame.Frame)
+		require.Equal(t, data[:frame.Frame.DataLen()], frame.Frame.Data)
+		require.Greater(t, frame.Frame.DataLen(), protocol.ByteCount(protocol.MaxPacketBufferSize))
+		frame.Frame.PutBack()
+		str.CancelWrite(0)
+		synctest.Wait()
+	})
+}
+
 func TestSendStreamLargeWriteBlocking(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const streamID protocol.StreamID = 1337

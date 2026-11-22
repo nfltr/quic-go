@@ -153,6 +153,18 @@ type Transport struct {
 	// datagrams coalesced by UDP_GRO (Linux 5.0+, where GRO is used when
 	// the kernel offers it).
 	DisableGRO bool
+	// DisableECN neither marks sent packets ECT(0) nor reads the ECN bits
+	// of received ones (Linux 5.0+, darwin and FreeBSD, where ECN is used
+	// by default).
+	DisableECN bool
+	// MaxPacketSize is the largest UDP payload the Transport reads: the
+	// size of its read buffers. 0: 1452 bytes. Above that (up to 8952,
+	// a 9000-byte MTU's) its packets take jumbo buffers of their own, for
+	// connections whose Config.MaxPacketSize is above 1452; a Config's
+	// MaxPacketSize above the Transport's is refused by Listen and Dial.
+	// Otherwise in [1200, 8952]. A Transport of ListenAddr, DialAddr and
+	// their kin takes its Config's.
+	MaxPacketSize uint16
 
 	mutex       sync.Mutex
 	handlers    map[protocol.ConnectionID]packetHandler
@@ -215,6 +227,9 @@ func (t *Transport) createServer(tlsConf *tls.Config, conf *Config, allow0RTT bo
 	if err := validateConfig(conf); err != nil {
 		return nil, err
 	}
+	if err := t.fitConfig(conf); err != nil {
+		return nil, err
+	}
 
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
@@ -264,10 +279,13 @@ func (t *Transport) DialEarly(ctx context.Context, addr net.Addr, tlsConf *tls.C
 }
 
 func (t *Transport) dial(ctx context.Context, addr net.Addr, host string, tlsConf *tls.Config, conf *Config, use0RTT bool) (*Conn, error) {
-	if err := t.init(t.isSingleUse); err != nil {
+	if err := validateConfig(conf); err != nil {
 		return nil, err
 	}
-	if err := validateConfig(conf); err != nil {
+	if err := t.fitConfig(conf); err != nil {
+		return nil, err
+	}
+	if err := t.init(t.isSingleUse); err != nil {
 		return nil, err
 	}
 	conf = populateConfig(conf)
@@ -397,7 +415,32 @@ func (t *Transport) sockOpts() (sockOpts, error) {
 	if t.ReceiveBufferSize < 0 || t.SendBufferSize < 0 {
 		return sockOpts{}, fmt.Errorf("quic: Transport.ReceiveBufferSize %d, SendBufferSize %d: want 0 (SocketBufferWanted) or more", t.ReceiveBufferSize, t.SendBufferSize)
 	}
-	return sockOpts{rcvBuf: t.ReceiveBufferSize, sndBuf: t.SendBufferSize, noGSO: t.DisableGSO, noGRO: t.DisableGRO}, nil
+	if m := t.MaxPacketSize; m != 0 && (m < protocol.MinInitialPacketSize || m > protocol.MaxJumboPacketSize) {
+		return sockOpts{}, fmt.Errorf("quic: Transport.MaxPacketSize %d: want 0 or [%d, %d]", m, protocol.MinInitialPacketSize, protocol.MaxJumboPacketSize)
+	}
+	return sockOpts{rcvBuf: t.ReceiveBufferSize, sndBuf: t.SendBufferSize, noGSO: t.DisableGSO, noGRO: t.DisableGRO,
+		noECN: t.DisableECN, readSize: t.readSize()}, nil
+}
+
+// readSize is Transport.MaxPacketSize, 0: MaxPacketBufferSize.
+func (t *Transport) readSize() protocol.ByteCount {
+	return max(protocol.ByteCount(t.MaxPacketSize), protocol.MaxPacketBufferSize)
+}
+
+// fitConfig refuses a Config sending packets larger than t reads; a
+// single-use Transport (ListenAddr, DialAddr, ...) reads its Config's.
+// conf is validated.
+func (t *Transport) fitConfig(conf *Config) error {
+	if conf == nil {
+		return nil
+	}
+	if t.isSingleUse && t.MaxPacketSize == 0 {
+		t.MaxPacketSize = conf.MaxPacketSize
+	}
+	if conf.maxPacketSize() > t.readSize() {
+		return fmt.Errorf("quic: Config.MaxPacketSize %d above its Transport's MaxPacketSize %d: the peer's packets would not fit", conf.MaxPacketSize, t.readSize())
+	}
+	return nil
 }
 
 func (t *Transport) init(allowZeroLengthConnIDs bool) error {
@@ -553,9 +596,6 @@ func (t *Transport) close(e error) {
 		t.Tracer.Close()
 	}
 }
-
-// only print warnings about the UDP receive buffer size once
-var setBufferWarningOnce sync.Once
 
 func (t *Transport) listen(conn rawConn) {
 	for {

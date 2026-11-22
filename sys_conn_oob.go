@@ -8,8 +8,6 @@ import (
 	"log"
 	"net"
 	"net/netip"
-	"os"
-	"strconv"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -35,11 +33,6 @@ var _ ipv4.Message = ipv6.Message{}
 
 type batchConn interface {
 	ReadBatch(ms []ipv4.Message, flags int) (int, error)
-}
-
-func isECNDisabledUsingEnv() bool {
-	disabled, err := strconv.ParseBool(os.Getenv("QUIC_GO_DISABLE_ECN"))
-	return err == nil && disabled
 }
 
 type oobConn struct {
@@ -142,7 +135,7 @@ func newConn(c OOBCapablePacketConn, supportsDF bool, o sockOpts) (*oobConn, err
 		cap: connCapabilities{
 			DF:  supportsDF,
 			GSO: !o.noGSO && isGSOEnabled(rawConn),
-			ECN: isECNEnabled(),
+			ECN: !o.noECN && isECNEnabled(),
 			GRO: !o.noGRO && enableGRO(rawConn),
 		},
 		opts: o,
@@ -166,8 +159,8 @@ func (c *oobConn) ReadPacket() (receivedPacket, error) {
 		c.messages = c.messages[:batchSize]
 		// replace buffers data buffers up to the packet that has been consumed during the last ReadBatch call
 		for i := uint8(0); i < c.readPos; i++ {
-			buffer := getPacketBuffer()
-			buffer.Data = buffer.Data[:protocol.MaxPacketBufferSize]
+			buffer := getPacketBufferFor(c.opts.packetSize())
+			buffer.Data = buffer.Data[:c.opts.packetSize()]
 			c.buffers[i] = buffer
 			c.messages[i].Buffers[0] = c.buffers[i].Data
 		}
@@ -230,11 +223,12 @@ func (c *oobConn) readGRO() (receivedPacket, error) {
 		}
 	}
 	n := min(c.groSeg, len(c.groRest))
-	buf := getPacketBuffer()
+	size := c.opts.packetSize()
+	buf := getPacketBufferFor(size)
 	// A peer's datagram over our packet size is cut to it, as the kernel
 	// cuts it without GRO: a queued packet never holds more than
-	// MaxPacketBufferSize (TestGROCutsOversizedDatagrams).
-	buf.Data = append(buf.Data, c.groRest[:min(n, protocol.MaxPacketBufferSize)]...)
+	// its read size (TestGROCutsOversizedDatagrams).
+	buf.Data = append(buf.Data, c.groRest[:min(n, int(size))]...)
 	c.groRest = c.groRest[n:]
 	p := c.groMsg
 	p.buffer, p.data = buf, buf.Data

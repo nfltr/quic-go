@@ -7,8 +7,8 @@ import (
 	"net/netip"
 )
 
-func newConn(c net.PacketConn, supportsDF bool, _ sockOpts) (*basicConn, error) {
-	return &basicConn{PacketConn: c, supportsDF: supportsDF}, nil
+func newConn(c net.PacketConn, supportsDF bool, o sockOpts) (*basicConn, error) {
+	return &basicConn{PacketConn: c, supportsDF: supportsDF, size: o.packetSize()}, nil
 }
 
 type packetInfo struct {
