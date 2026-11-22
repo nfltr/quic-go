@@ -55,7 +55,7 @@ var _ OOBCapablePacketConn = &net.UDPConn{}
 
 // sockOpts are a Transport's socket settings (Transport.sockOpts).
 type sockOpts struct {
-	rcvBuf, sndBuf      int                // the buffer sizes to ask for, at least (0: desiredBufferSize)
+	rcvBuf, sndBuf      int                // the buffer sizes to ask for, at least (0: SocketBufferWanted, SocketSendBufferWanted)
 	noGSO, noGRO, noECN bool               // GSO, GRO, ECN off
 	readSize            protocol.ByteCount // the largest packet read (0: MaxPacketBufferSize)
 }
@@ -69,7 +69,7 @@ func wrapConn(pc net.PacketConn, o sockOpts) (rawConn, error) {
 	// A host giving less than asked is no error: SocketBuffers reports
 	// what it gave.
 	_ = setReceiveBuffer(pc, cmp.Or(o.rcvBuf, desiredBufferSize))
-	_ = setSendBuffer(pc, cmp.Or(o.sndBuf, desiredBufferSize))
+	_ = setSendBuffer(pc, cmp.Or(o.sndBuf, SocketSendBufferWanted))
 
 	conn, ok := pc.(interface {
 		SyscallConn() (syscall.RawConn, error)

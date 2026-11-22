@@ -20,7 +20,8 @@ const SocketSendBufferWanted = 256 << 10
 // SocketBuffers returns the receive and send buffer sizes the host gave
 // c's socket (SO_RCVBUF, SO_SNDBUF; Linux reports twice what it reserves
 // for data, its bookkeeping included). A host whose limit is lower than
-// SocketBufferWanted (Linux net.core.rmem_max, wmem_max) gives less
+// SocketBufferWanted or SocketSendBufferWanted (Linux net.core.rmem_max,
+// wmem_max) gives less
 // without an error; quic-go logs it only at debug level.
 func SocketBuffers(c net.PacketConn) (read, write int, err error) {
 	sc, ok := c.(interface {

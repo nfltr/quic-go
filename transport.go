@@ -140,7 +140,8 @@ type Transport struct {
 	// ReceiveBufferSize and SendBufferSize are the socket buffer sizes
 	// (SO_RCVBUF, SO_SNDBUF) the Transport asks the host for when it
 	// wraps Conn: at least this many bytes (a larger buffer the socket
-	// has is kept). 0: SocketBufferWanted. A host may give less (Linux:
+	// has is kept). 0: SocketBufferWanted to receive,
+	// SocketSendBufferWanted to send. A host may give less (Linux:
 	// net.core.rmem_max, wmem_max); SocketBuffers reports what it gave.
 	// Negative: Listen and Dial fail.
 	ReceiveBufferSize int
@@ -413,7 +414,7 @@ func (t *Transport) doDial(
 // are refused.
 func (t *Transport) sockOpts() (sockOpts, error) {
 	if t.ReceiveBufferSize < 0 || t.SendBufferSize < 0 {
-		return sockOpts{}, fmt.Errorf("quic: Transport.ReceiveBufferSize %d, SendBufferSize %d: want 0 (SocketBufferWanted) or more", t.ReceiveBufferSize, t.SendBufferSize)
+		return sockOpts{}, fmt.Errorf("quic: Transport.ReceiveBufferSize %d, SendBufferSize %d: want 0 (SocketBufferWanted, SocketSendBufferWanted) or more", t.ReceiveBufferSize, t.SendBufferSize)
 	}
 	if m := t.MaxPacketSize; m != 0 && (m < protocol.MinInitialPacketSize || m > protocol.MaxJumboPacketSize) {
 		return sockOpts{}, fmt.Errorf("quic: Transport.MaxPacketSize %d: want 0 or [%d, %d]", m, protocol.MinInitialPacketSize, protocol.MaxJumboPacketSize)

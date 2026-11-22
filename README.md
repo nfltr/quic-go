@@ -61,8 +61,10 @@ datagram over the Transport's `MaxPacketSize`, 1452 bytes by default, is
 cut to that, as without GRO, so the queue holds at most 4096 x 1452 bytes,
 ~5.7 MiB, or 4096 x 8952, ~35 MiB, on a jumbo Transport); `SocketBuffers`
 reports the socket buffers the host gave (asked: `Transport.ReceiveBufferSize`
-and `SendBufferSize`, 0: `SocketBufferWanted`, 7 MiB), so a program can tell
-its user to raise `net.core.rmem_max`/`wmem_max`; a host giving less is not
+and `SendBufferSize`, 0: `SocketBufferWanted`, 7 MiB, and
+`SocketSendBufferWanted`, 256 KiB: a 7 MiB send buffer queued ~5,000
+packets in the host's qdisc, whose CoDel dropped whole GSO batches), so a
+program can tell its user to raise `net.core.rmem_max`; a host giving less is not
 logged (upstream's warning and `QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING` are
 deleted). Every speed knob is a typed option, none an environment variable:
 `Config.CongestionControl`, `Config.AckFrequency`, `Config.DisablePacing`,
