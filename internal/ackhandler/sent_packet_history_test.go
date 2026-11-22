@@ -1,6 +1,7 @@
 package ackhandler
 
 import (
+	"math/rand/v2"
 	"slices"
 	"testing"
 
@@ -348,4 +349,56 @@ func TestSentPacketHistoryDifference(t *testing.T) {
 	require.Equal(t, protocol.PacketNumber(4), hist.Difference(7, 1)) // 4 and 5 were skipped
 	require.Equal(t, protocol.PacketNumber(3), hist.Difference(7, 2)) // 4 and 5 were skipped
 	require.Equal(t, protocol.PacketNumber(5), hist.Difference(9, 1)) // 4, 5 and 8 were skipped
+}
+
+// PacketsFrom yields exactly the packets held from a packet number on, in
+// order, through random sends, skipped packet numbers, removals and
+// losses, also removing during the walk (the skip pointers, lane FORKLEFT).
+func TestSentPacketHistoryPacketsFromRandomized(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1, 2))
+	hist := newSentPacketHistory()
+	held := map[protocol.PacketNumber]bool{}
+	var next protocol.PacketNumber
+	want := func(from protocol.PacketNumber) []protocol.PacketNumber {
+		var pns []protocol.PacketNumber
+		for pn := range held {
+			if pn >= from {
+				pns = append(pns, pn)
+			}
+		}
+		slices.Sort(pns)
+		return pns
+	}
+	for range 20000 {
+		switch r := rng.IntN(10); {
+		case r < 5:
+			if rng.IntN(8) == 0 {
+				next++ // skipped
+			}
+			hist.SentPacket(next, &packet{StreamFrames: []StreamFrame{{}}})
+			held[next] = true
+			next++
+		case r < 8 && len(held) > 0:
+			pns := want(0)
+			pn := pns[rng.IntN(len(pns))]
+			if r == 7 {
+				hist.DeclareLost(pn)
+			} else {
+				require.NoError(t, hist.Remove(pn))
+			}
+			delete(held, pn)
+		default:
+			from := protocol.PacketNumber(rng.IntN(int(next) + 1))
+			var got []protocol.PacketNumber
+			w := want(from)
+			for pn := range hist.PacketsFrom(from) {
+				got = append(got, pn)
+				if rng.IntN(4) == 0 { // remove while walking
+					require.NoError(t, hist.Remove(pn))
+					delete(held, pn)
+				}
+			}
+			require.Equal(t, w, got)
+		}
+	}
 }
