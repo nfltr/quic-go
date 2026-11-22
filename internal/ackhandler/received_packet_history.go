@@ -1,6 +1,7 @@
 package ackhandler
 
 import (
+	"cmp"
 	"iter"
 	"slices"
 
@@ -145,6 +146,12 @@ func (h *receivedPacketHistory) HighestMissingUpTo(p protocol.PacketNumber) prot
 		}
 	}
 	return p
+}
+
+// find returns the index of the range holding p.
+func (h *receivedPacketHistory) find(p protocol.PacketNumber) (int, bool) {
+	i, _ := slices.BinarySearchFunc(h.ranges, p, func(r interval, p protocol.PacketNumber) int { return cmp.Compare(r.End, p) })
+	return i, i < len(h.ranges) && h.ranges[i].Start <= p
 }
 
 func (h *receivedPacketHistory) IsPotentiallyDuplicate(p protocol.PacketNumber) bool {
