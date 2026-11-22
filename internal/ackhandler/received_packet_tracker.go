@@ -146,14 +146,20 @@ func (h *appDataReceivedPacketTracker) ReceivedPacket(pn protocol.PacketNumber, 
 		h.largestObserved = pn
 		h.largestObservedRcvdTime = rcvTime
 	}
+	var why string
 	if traceOn {
-		defer h.trace("Recv", "pn", pn, "el", ackEliciting, "ce", ecn == protocol.ECNCE, "t", rcvTime)
+		defer func() {
+			h.trace("Recv", "pn", pn, "el", ackEliciting, "ce", ecn == protocol.ECNCE, "t", rcvTime, "why", why)
+		}()
 	}
 	if !ackEliciting {
 		return nil
 	}
 	h.ackElicitingPacketsReceivedSinceLastAck++
-	if !h.ackQueued && h.shouldQueueACK(pn, ecn) {
+	if !h.ackQueued {
+		why = h.queueReason(pn, ecn)
+	}
+	if why != "" {
 		h.ackQueued = true
 		h.ackAlarm = 0 // cancel the ack alarm
 	}
@@ -235,12 +241,15 @@ func (h *appDataReceivedPacketTracker) hasNewMissingPackets() bool {
 	return highestMissing+r > h.lastAck.LargestAcked()
 }
 
-func (h *appDataReceivedPacketTracker) shouldQueueACK(pn protocol.PacketNumber, ecn protocol.ECN) bool {
+// queueReason is why the packet pn queues an ACK at once ("": it does
+// not): count, late (r below the largest acknowledged), hole (a new
+// missing packet r deep) or ce (ECN-CE).
+func (h *appDataReceivedPacketTracker) queueReason(pn protocol.PacketNumber, ecn protocol.ECN) string {
 	if h.ackElicitingPacketsReceivedSinceLastAck > h.policy.threshold {
 		if h.logger.Debug() {
 			h.logger.Debugf("\tQueueing ACK because %d packets were received after the last ACK (threshold: %d).", h.ackElicitingPacketsReceivedSinceLastAck, h.policy.threshold)
 		}
-		return true
+		return "count"
 	}
 	if r := h.policy.reordering; r > 0 {
 		// A packet r or more below the largest acknowledged: the peer may
@@ -249,19 +258,19 @@ func (h *appDataReceivedPacketTracker) shouldQueueACK(pn protocol.PacketNumber, 
 			if h.logger.Debug() {
 				h.logger.Debugf("\tQueueing ACK because packet %d arrived %d or more below the largest acknowledged.", pn, r)
 			}
-			return true
+			return "late"
 		}
 		if h.hasNewMissingPackets() {
 			h.logger.Debugf("\tQueuing ACK because there's a new missing packet to report.")
-			return true
+			return "hole"
 		}
 	}
 	// queue an ACK if the packet was ECN-CE marked
 	if ecn == protocol.ECNCE {
 		h.logger.Debugf("\tQueuing ACK because the packet was ECN-CE marked.")
-		return true
+		return "ce"
 	}
-	return false
+	return ""
 }
 
 func (h *appDataReceivedPacketTracker) GetAckFrame(now monotime.Time, onlyIfQueued bool) *wire.AckFrame {

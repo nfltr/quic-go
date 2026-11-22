@@ -35,7 +35,9 @@
 > QUIC ACK Frequency extension (`Config.AckFrequency`: the receiver
 > acknowledges at the rate the sender asks for in ACK_FREQUENCY, and a
 > reordering within its threshold forces no ACK; the sender's packet
-> threshold is that reordering threshold); on darwin a packet is written inline, in one
+> threshold is that reordering threshold, and once a spurious loss turns
+> that threshold off it asks again for Reordering Threshold 0, so a path
+> reordering past it costs no immediate ACKs); on darwin a packet is written inline, in one
 > non-blocking sendmsg, when nothing waits in the send queue, instead of
 > waking the queue's goroutine; and on darwin a connection that has sent 64
 packets sends on a socket of its own, bound to the shared socket's port

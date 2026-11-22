@@ -229,6 +229,44 @@ func (c *MockSentPacketHandlerOnLossDetectionTimeoutCall) DoAndReturn(f func(mon
 	return c
 }
 
+// PacketThresholdDisabled mocks base method.
+func (m *MockSentPacketHandler) PacketThresholdDisabled() bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PacketThresholdDisabled")
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// PacketThresholdDisabled indicates an expected call of PacketThresholdDisabled.
+func (mr *MockSentPacketHandlerMockRecorder) PacketThresholdDisabled() *MockSentPacketHandlerPacketThresholdDisabledCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PacketThresholdDisabled", reflect.TypeOf((*MockSentPacketHandler)(nil).PacketThresholdDisabled))
+	return &MockSentPacketHandlerPacketThresholdDisabledCall{Call: call}
+}
+
+// MockSentPacketHandlerPacketThresholdDisabledCall wrap *gomock.Call
+type MockSentPacketHandlerPacketThresholdDisabledCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockSentPacketHandlerPacketThresholdDisabledCall) Return(arg0 bool) *MockSentPacketHandlerPacketThresholdDisabledCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockSentPacketHandlerPacketThresholdDisabledCall) Do(f func() bool) *MockSentPacketHandlerPacketThresholdDisabledCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockSentPacketHandlerPacketThresholdDisabledCall) DoAndReturn(f func() bool) *MockSentPacketHandlerPacketThresholdDisabledCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // PeekPacketNumber mocks base method.
 func (m *MockSentPacketHandler) PeekPacketNumber(arg0 protocol.PacketNumberSpace) (protocol.PacketNumber, protocol.PacketNumberLen) {
 	m.ctrl.T.Helper()

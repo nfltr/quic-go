@@ -194,6 +194,11 @@ type Conn struct {
 	handshakeComplete  bool
 	handshakeConfirmed bool
 
+	// ACK_FREQUENCY frames sent (sendAckFrequency), and whether the last
+	// asked for Reordering Threshold 0 (this side's packet threshold off)
+	ackFreqSeq        uint64
+	ackFreqReorderOff bool
+
 	receivedRetry       bool
 	versionNegotiated   bool
 	receivedFirstPacket bool
@@ -1044,14 +1049,27 @@ func (c *Conn) handleHandshakeConfirmed(now monotime.Time) error {
 var minAckDelay = protocol.TimerGranularity
 
 // sendAckFrequency asks a peer that advertised min_ack_delay for
-// Config.AckFrequency's policy, once (sequence 0; a lost frame is resent as a
-// control frame), and makes its Reordering Threshold this side's packet
-// threshold (draft-ietf-quic-ack-frequency section 9). Model: github.com/nfltr/link
-// spec/AckFrequency.tla.
+// Config.AckFrequency's policy (a lost frame is resent as a control frame),
+// and makes its Reordering Threshold this side's packet threshold
+// (draft-ietf-quic-ack-frequency section 9): at the handshake (sequence
+// 0), then again each time this side's packet threshold goes off or on
+// (maybeUpdateAckFrequency). While it is off (a spurious loss: the path
+// reorders past it) the request is Reordering Threshold 0: immediate ACKs
+// for reordering would speed no loss detection, and on a path reordering
+// past the threshold they were nearly one per late packet (0.3 ACK
+// packets per data packet on Helsinki -> Singapore, against 0.1; nfltr
+// lane ACKFIX). Model: github.com/nfltr/link spec/AckFrequency.tla
+// (AckFrequencyDeep.cfg); guard: TestBulkUploadOnReorderingPath
+// bbr/deep-reorder/ackfreq.
 func (c *Conn) sendAckFrequency() {
 	af := c.config.AckFrequency
 	if af == nil || c.peerParams == nil || c.peerParams.MinAckDelay == nil {
 		return
+	}
+	off := c.sentPacketHandler.PacketThresholdDisabled()
+	reordering := protocol.PacketNumber(af.ReorderingThreshold)
+	if off {
+		reordering = 0 // draft section 6.2: no immediate ACK for reordering
 	}
 	delay := af.MaxAckDelay
 	if delay == 0 {
@@ -1059,11 +1077,22 @@ func (c *Conn) sendAckFrequency() {
 	}
 	delay = min(max(delay, *c.peerParams.MinAckDelay, protocol.TimerGranularity), ackhandler.MaxAckDelay, c.peerParams.MaxAckDelay)
 	c.queueControlFrame(&wire.AckFrequencyFrame{
+		SequenceNumber:        c.ackFreqSeq,
 		AckElicitingThreshold: af.AckElicitingThreshold,
 		RequestMaxAckDelay:    delay,
-		ReorderingThreshold:   protocol.PacketNumber(af.ReorderingThreshold),
+		ReorderingThreshold:   reordering,
 	})
+	c.ackFreqSeq++
+	c.ackFreqReorderOff = off
 	c.sentPacketHandler.SetPacketThreshold(protocol.PacketNumber(af.ReorderingThreshold))
+}
+
+// maybeUpdateAckFrequency asks again once an ACK turned this side's packet
+// threshold off (or a path migration on).
+func (c *Conn) maybeUpdateAckFrequency() {
+	if c.ackFreqSeq > 0 && c.sentPacketHandler.PacketThresholdDisabled() != c.ackFreqReorderOff {
+		c.sendAckFrequency()
+	}
 }
 
 func (c *Conn) handleAckFrequencyFrame(f *wire.AckFrequencyFrame) error {
@@ -2206,6 +2235,7 @@ func (c *Conn) handleAckFrame(frame *wire.AckFrame, encLevel protocol.Encryption
 	if err != nil {
 		return err
 	}
+	c.maybeUpdateAckFrequency()
 	if !acked1RTTPacket {
 		return nil
 	}

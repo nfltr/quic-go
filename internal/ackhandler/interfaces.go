@@ -38,4 +38,7 @@ type SentPacketHandler interface {
 	MigratedPath(now monotime.Time, initialMaxPacketSize protocol.ByteCount)
 	// SetPacketThreshold sets the 1-RTT packet threshold of loss detection.
 	SetPacketThreshold(protocol.PacketNumber)
+	// PacketThresholdDisabled says if 1-RTT packet-threshold loss detection
+	// is off (a spurious loss was detected; a path migration turns it on).
+	PacketThresholdDisabled() bool
 }

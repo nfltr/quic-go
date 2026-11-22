@@ -241,6 +241,8 @@ func (h *sentPacketHandler) SetPacketThreshold(n protocol.PacketNumber) {
 	h.qlogRecoveryParametersSet(false)
 }
 
+func (h *sentPacketHandler) PacketThresholdDisabled() bool { return h.packetThresholdDisabled }
+
 func (h *sentPacketHandler) qlogRecoveryParametersSet(initial bool) {
 	if h.qlogger == nil {
 		return
