@@ -741,15 +741,17 @@ func testTransportReplaceWithClosed(t *testing.T, local bool) {
 func TestTransportSocketOptions(t *testing.T) {
 	t.Run("buffers refused are reported", func(t *testing.T) {
 		udp := newUDPConnLocalhost(t)
-		tr := &Transport{Conn: udp, ReceiveBufferSize: 1 << 30, SendBufferSize: 1 << 30}
+		// More than any host gives: Linux clamps even a forced size
+		// (CAP_NET_ADMIN) to 2*(INT_MAX/2), below MaxInt32.
+		tr := &Transport{Conn: udp, ReceiveBufferSize: math.MaxInt32, SendBufferSize: math.MaxInt32}
 		defer tr.Close()
 		ln, err := tr.Listen(&tls.Config{}, nil)
 		require.NoError(t, err)
 		defer ln.Close()
 		r, w, err := SocketBuffers(udp)
 		require.NoError(t, err)
-		require.Less(t, r, 1<<30)
-		require.Less(t, w, 1<<30)
+		require.Less(t, r, math.MaxInt32)
+		require.Less(t, w, math.MaxInt32)
 	})
 	t.Run("negative buffer refused", func(t *testing.T) {
 		for _, tr := range []*Transport{{ReceiveBufferSize: -1}, {SendBufferSize: -1}} {
