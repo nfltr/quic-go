@@ -147,6 +147,7 @@ type sentPacketHandler struct {
 	qlogger     qlogwriter.Recorder
 	lastMetrics qlog.MetricsUpdated
 	logger      utils.Logger
+	ltr         *lossTrace // -tags quicacktrace only
 }
 
 var _ SentPacketHandler = &sentPacketHandler{}
@@ -196,6 +197,7 @@ func NewSentPacketHandler(
 		perspective:        pers,
 		qlogger:            qlogger,
 		logger:             logger,
+		ltr:                newLossTrace(),
 	}
 	h.newCongestionController(initialMaxDatagramSize)
 	if enableECN {
@@ -365,6 +367,7 @@ func (h *sentPacketHandler) SentPacket(
 	h.bytesSent += size
 	h.connStats.BytesSent.Add(uint64(size))
 	h.connStats.PacketsSent.Add(1)
+	h.traceSent()
 
 	pnSpace := h.getPacketNumberSpace(encLevel.PacketNumberSpace())
 	pnSpace.largestSent = pn
@@ -539,6 +542,7 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 			ack,
 			rcvTime.Add(-min(ack.DelayTime, h.rttStats.MaxAckDelay())),
 		)
+		h.traceAck(ack, rcvTime.Add(-min(ack.DelayTime, h.rttStats.MaxAckDelay())))
 		// clean up lost packet history
 		h.lostPackets.DeleteBefore(rcvTime.Add(-3 * h.rttStats.PTO(false)))
 	}
@@ -643,6 +647,7 @@ func (h *sentPacketHandler) detectSpuriousLosses(ack *wire.AckFrame, ackTime mon
 				TimeReordering:   timeReordering,
 			})
 		}
+		h.traceSpurious(pn, packetReordering, timeReordering)
 		spuriousLosses = append(spuriousLosses, pn)
 	}
 	h.lostPackets.DeleteAll(spuriousLosses)
@@ -981,8 +986,9 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 			}
 		}
 		var packetLost bool
+		why := "pkt"
 		if !p.SendTime.After(lostSendTime) {
-			packetLost = true
+			packetLost, why = true, "time"
 			if !p.isPathProbePacket && p.IsAckEliciting() {
 				if h.logger.Debug() {
 					h.logger.Debugf("\tlost packet %d (time threshold)", pn)
@@ -1027,6 +1033,7 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 			}
 			h.hist.DeclareLost(pn)
 			if !p.isPathProbePacket && p.IsAckEliciting() {
+				h.traceLost(pn, p, why, now, distance, lossDelay)
 				// the bytes in flight need to be reduced no matter if the frames in this packet will be retransmitted
 				h.removeFromBytesInFlight(p)
 				h.queueFramesForRetransmission(p)
@@ -1231,6 +1238,7 @@ func (h *sentPacketHandler) QueueProbePacket(space protocol.PacketNumberSpace) b
 	// TODO: don't declare the packet lost here.
 	// Keep track of acknowledged frames instead.
 	// Call DeclareLost before queueFramesForRetransmission, which clears the packet's frames.
+	h.traceLost(pn, p, "pto", monotime.Now(), 0, 0)
 	h.hist.DeclareLost(pn)
 	h.removeFromBytesInFlight(p)
 	h.queueFramesForRetransmission(p)
