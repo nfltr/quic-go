@@ -25,9 +25,17 @@ func (c *Config) maxRetryTokenAge() time.Duration {
 
 func (c *Config) initialPacketSize() protocol.ByteCount {
 	if c.InitialPacketSize == 0 {
-		return protocol.InitialPacketSize
+		return min(protocol.InitialPacketSize, c.maxPacketSize())
 	}
 	return protocol.ByteCount(c.InitialPacketSize)
+}
+
+// maxPacketSize is Config.MaxPacketSize, 0: MaxPacketBufferSize.
+func (c *Config) maxPacketSize() protocol.ByteCount {
+	if c.MaxPacketSize == 0 {
+		return protocol.MaxPacketBufferSize
+	}
+	return protocol.ByteCount(c.MaxPacketSize)
 }
 
 func validateConfig(config *Config) error {
@@ -52,6 +60,12 @@ func validateConfig(config *Config) error {
 	}
 	if config.InitialPacketSize > protocol.MaxPacketBufferSize {
 		config.InitialPacketSize = protocol.MaxPacketBufferSize
+	}
+	if config.CongestionControl > CongestionControlBBR {
+		return fmt.Errorf("invalid CongestionControl %d: want CongestionControlReno or CongestionControlBBR", config.CongestionControl)
+	}
+	if m := config.MaxPacketSize; m != 0 && (m < protocol.MinInitialPacketSize || m > protocol.MaxPacketBufferSize || m < config.InitialPacketSize) {
+		return fmt.Errorf("invalid MaxPacketSize %d: want 0 or [%d, %d], at least InitialPacketSize (%d)", m, protocol.MinInitialPacketSize, protocol.MaxPacketBufferSize, config.InitialPacketSize)
 	}
 	if af := config.AckFrequency; af != nil {
 		if af.ReorderingThreshold < 1 || af.AckElicitingThreshold >= af.ReorderingThreshold {
@@ -133,6 +147,8 @@ func populateConfig(config *Config) *Config {
 		TokenStore:                       config.TokenStore,
 		EnableDatagrams:                  config.EnableDatagrams,
 		CongestionControl:                config.CongestionControl,
+		DisablePacing:                    config.DisablePacing,
+		MaxPacketSize:                    config.MaxPacketSize,
 		InitialPacketSize:                config.InitialPacketSize,
 		DisablePathMTUDiscovery:          config.DisablePathMTUDiscovery,
 		EnableStreamResetPartialDelivery: config.EnableStreamResetPartialDelivery,

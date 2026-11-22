@@ -29,7 +29,7 @@ func TestSendQueueWritesInline(t *testing.T) {
 			tx, err := net.ListenUDP(network, laddr)
 			require.NoError(t, err)
 			defer tx.Close()
-			raw, err := wrapConn(tx)
+			raw, err := wrapConn(tx, sockOpts{})
 			require.NoError(t, err)
 			q := newSendQueue(newSendConn(raw, rx.LocalAddr(), packetInfo{}, utils.DefaultLogger)).(*sendQueue)
 

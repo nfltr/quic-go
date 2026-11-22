@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/netip"
 	"os"
-	"strconv"
 	"syscall"
 	"unsafe"
 
@@ -69,10 +68,6 @@ func isGSOEnabled(conn syscall.RawConn) bool {
 	if kernelVersionMajor < 5 {
 		return false
 	}
-	disabled, err := strconv.ParseBool(os.Getenv("QUIC_GO_DISABLE_GSO"))
-	if err == nil && disabled {
-		return false
-	}
 	var serr error
 	if err := conn.Control(func(fd uintptr) {
 		_, serr = unix.GetsockoptInt(int(fd), unix.IPPROTO_UDP, unix.UDP_SEGMENT)
@@ -84,13 +79,9 @@ func isGSOEnabled(conn syscall.RawConn) bool {
 
 // enableGRO turns on UDP_GRO (Linux 5.0+): the kernel hands a flow's
 // datagrams over in one buffer with their size in a control message.
-// QUIC_GO_DISABLE_GRO turns it off, as QUIC_GO_DISABLE_GSO does GSO.
+// Transport.DisableGRO turns it off, as Transport.DisableGSO does GSO.
 func enableGRO(conn syscall.RawConn) bool {
 	if kernelVersionMajor < 5 {
-		return false
-	}
-	disabled, err := strconv.ParseBool(os.Getenv("QUIC_GO_DISABLE_GRO"))
-	if err == nil && disabled {
 		return false
 	}
 	var serr error

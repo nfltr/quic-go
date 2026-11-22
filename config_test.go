@@ -79,6 +79,30 @@ func TestConfigValidationAckFrequency(t *testing.T) {
 	require.NoError(t, validateConfig(&Config{AckFrequency: &AckFrequency{AckElicitingThreshold: 9, ReorderingThreshold: 10}}))
 }
 
+// TestConfigValidationSpeedKnobs: CongestionControl, MaxPacketSize.
+func TestConfigValidationSpeedKnobs(t *testing.T) {
+	for _, tc := range []struct {
+		c  Config
+		ok bool
+	}{
+		{Config{}, true},
+		{Config{CongestionControl: CongestionControlBBR, DisablePacing: true}, true},
+		{Config{CongestionControl: CongestionControlBBR + 1}, false},
+		{Config{MaxPacketSize: 1200}, true},
+		{Config{MaxPacketSize: 1452}, true},
+		{Config{MaxPacketSize: 1199}, false},
+		{Config{MaxPacketSize: 1453}, false},
+		{Config{MaxPacketSize: 9000}, false},
+		{Config{MaxPacketSize: 1300, InitialPacketSize: 1300}, true},
+		{Config{MaxPacketSize: 1300, InitialPacketSize: 1350}, false},
+	} {
+		err := validateConfig(&tc.c)
+		require.Equal(t, tc.ok, err == nil, "%+v: %v", tc.c, err)
+	}
+	require.Equal(t, protocol.ByteCount(protocol.MaxPacketBufferSize), (&Config{}).maxPacketSize())
+	require.Equal(t, protocol.ByteCount(1300), (&Config{MaxPacketSize: 1300}).maxPacketSize())
+}
+
 func TestConfigHandshakeIdleTimeout(t *testing.T) {
 	c := &Config{HandshakeIdleTimeout: time.Second * 11 / 2}
 	require.Equal(t, 11*time.Second, c.handshakeTimeout())
@@ -138,6 +162,10 @@ func configWithNonZeroNonFunctionFields(t *testing.T) *Config {
 			f.Set(reflect.ValueOf(uint16(1350)))
 		case "DisablePathMTUDiscovery":
 			f.Set(reflect.ValueOf(true))
+		case "DisablePacing":
+			f.Set(reflect.ValueOf(true))
+		case "MaxPacketSize":
+			f.Set(reflect.ValueOf(uint16(1400)))
 		case "Allow0RTT":
 			f.Set(reflect.ValueOf(true))
 		case "EnableStreamResetPartialDelivery":

@@ -118,7 +118,7 @@ func testSentPacketHandlerSendAndAcknowledge(t *testing.T, encLevel protocol.Enc
 		nil,
 		protocol.PerspectiveClient,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 
 	var packets packetTracker
@@ -179,7 +179,7 @@ func TestSentPacketHandlerAcknowledgeSkippedPacket(t *testing.T) {
 		nil,
 		protocol.PerspectiveClient,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 
 	now := monotime.Now()
@@ -222,7 +222,7 @@ func TestSentPacketHandlerRTTAckEliciting(t *testing.T) {
 		nil,
 		protocol.PerspectiveClient,
 		&eventRecorder,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 
 	getPacketsInFlight := func() int {
@@ -310,7 +310,7 @@ func TestSentPacketHandlerRTTAcrossPacketNumberSpaces(t *testing.T) {
 		nil,
 		protocol.PerspectiveClient,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 
 	sendPacket := func(t *testing.T, ti monotime.Time, encLevel protocol.EncryptionLevel) protocol.PacketNumber {
@@ -348,7 +348,7 @@ func TestSentPacketHandlerCongestionAcrossPacketNumberSpaces(t *testing.T) {
 	var eventRecorder events.Recorder
 	sph := NewSentPacketHandler(
 		0, 1200, utils.NewRTTStats(), &utils.ConnectionStats{}, true, false,
-		nil, protocol.PerspectiveServer, &eventRecorder, utils.DefaultLogger, false,
+		nil, protocol.PerspectiveServer, &eventRecorder, utils.DefaultLogger, Congestion{},
 	)
 	var packets packetTracker
 	now := monotime.Now()
@@ -413,7 +413,7 @@ func testSentPacketHandlerRTTAckDelays(t *testing.T, encLevel protocol.Encryptio
 		nil,
 		protocol.PerspectiveClient,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 
 	sendPacket := func(t *testing.T, ti monotime.Time) protocol.PacketNumber {
@@ -504,7 +504,7 @@ func testSentPacketHandlerAmplificationLimitServer(t *testing.T, addressValidate
 		nil,
 		protocol.PerspectiveServer,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 
 	if addressValidated {
@@ -575,7 +575,7 @@ func testSentPacketHandlerAmplificationLimitClient(t *testing.T, dropHandshake b
 		nil,
 		protocol.PerspectiveClient,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 
 	require.Equal(t, SendAny, sph.SendMode(monotime.Now()))
@@ -631,7 +631,7 @@ func TestSentPacketHandlerDelayBasedLossDetection(t *testing.T) {
 		nil,
 		protocol.PerspectiveServer,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 
 	var packets packetTracker
@@ -679,7 +679,7 @@ func TestSentPacketHandlerDelayBasedLossDetection(t *testing.T) {
 // (ACK_FREQUENCY's Reordering Threshold, draft-ietf-quic-ack-frequency
 // section 9) is the one its loss detection uses.
 func TestSentPacketHandlerSetPacketThreshold(t *testing.T) {
-	sph := NewSentPacketHandler(0, 1200, utils.NewRTTStats(), &utils.ConnectionStats{}, true, false, nil, protocol.PerspectiveServer, nil, utils.DefaultLogger, false)
+	sph := NewSentPacketHandler(0, 1200, utils.NewRTTStats(), &utils.ConnectionStats{}, true, false, nil, protocol.PerspectiveServer, nil, utils.DefaultLogger, Congestion{})
 	sph.SetPacketThreshold(10)
 	var packets packetTracker
 	now := monotime.Now()
@@ -718,7 +718,7 @@ func TestSentPacketHandlerPacketBasedLossDetection(t *testing.T) {
 				nil,
 				protocol.PerspectiveServer,
 				nil,
-				utils.DefaultLogger, false,
+				utils.DefaultLogger, Congestion{},
 			)
 
 			var packets packetTracker
@@ -807,7 +807,7 @@ func TestSentPacketHandlerAdaptiveTimeThreshold(t *testing.T) {
 		nil,
 		protocol.PerspectiveServer,
 		&eventRecorder,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 	parameters := qlog.RecoveryParametersSet{
 		EncryptionLevel:         protocol.Encryption1RTT,
@@ -962,7 +962,7 @@ func testSentPacketHandlerPTO(t *testing.T, encLevel protocol.EncryptionLevel, p
 		nil,
 		protocol.PerspectiveServer,
 		&eventRecorder,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 
 	// in the application-data packet number space, the PTO is only set
@@ -1180,7 +1180,7 @@ func TestSentPacketHandlerPacketNumberSpacesPTO(t *testing.T) {
 		nil,
 		protocol.PerspectiveServer,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 
 	sendPacket := func(t *testing.T, ti monotime.Time, encLevel protocol.EncryptionLevel) protocol.PacketNumber {
@@ -1281,7 +1281,7 @@ func TestSentPacketHandler0RTT(t *testing.T) {
 		nil,
 		protocol.PerspectiveClient,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 
 	var appDataPackets packetTracker
@@ -1337,7 +1337,7 @@ func TestSentPacketHandlerCongestion(t *testing.T) {
 		nil,
 		protocol.PerspectiveServer,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 	sph.(*sentPacketHandler).congestion = cong
 
@@ -1438,7 +1438,7 @@ func testSentPacketHandlerRetry(t *testing.T, rtt, expectedRTT time.Duration) {
 		nil,
 		protocol.PerspectiveClient,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 
 	start := monotime.Now()
@@ -1491,7 +1491,7 @@ func TestSentPacketHandlerRetryAfterPTO(t *testing.T) {
 		nil,
 		protocol.PerspectiveClient,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 
 	var packets packetTracker
@@ -1536,7 +1536,7 @@ func TestSentPacketHandlerECN(t *testing.T) {
 		nil,
 		protocol.PerspectiveClient,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 	sph.(*sentPacketHandler).ecnTracker = ecnHandler
 	sph.(*sentPacketHandler).congestion = cong
@@ -1654,7 +1654,7 @@ func TestSentPacketHandlerPathProbe(t *testing.T) {
 		nil,
 		protocol.PerspectiveClient,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 	sph.DropPackets(protocol.EncryptionInitial, monotime.Now())
 	sph.DropPackets(protocol.EncryptionHandshake, monotime.Now())
@@ -1735,7 +1735,7 @@ func TestSentPacketHandlerPathProbeAckAndLoss(t *testing.T) {
 		nil,
 		protocol.PerspectiveClient,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 	sph.DropPackets(protocol.EncryptionInitial, monotime.Now())
 	sph.DropPackets(protocol.EncryptionHandshake, monotime.Now())
@@ -1812,7 +1812,7 @@ func testSentPacketHandlerRandomized(t *testing.T, seed uint64) {
 		nil,
 		protocol.PerspectiveClient,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 	sph.DropPackets(protocol.EncryptionInitial, monotime.Now())
 	sph.DropPackets(protocol.EncryptionHandshake, monotime.Now())
@@ -1883,7 +1883,7 @@ func TestSentPacketHandlerSpuriousLoss(t *testing.T) {
 		nil,
 		protocol.PerspectiveClient,
 		&eventRecorder,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 
 	var packets packetTracker
@@ -2084,7 +2084,7 @@ func benchmarkSendAndAcknowledge(b *testing.B, ackEvery, inFlight int) {
 		nil,
 		protocol.PerspectiveClient,
 		nil,
-		utils.DefaultLogger, false,
+		utils.DefaultLogger, Congestion{},
 	)
 	now := monotime.Now()
 	sph.DropPackets(protocol.EncryptionInitial, now)
@@ -2131,7 +2131,7 @@ func TestSentPacketHandlerSpuriousLossOfBurst(t *testing.T) {
 	for _, n := range []int{10, 100, 1000} {
 		t.Run(fmt.Sprintf("%d packets", n), func(t *testing.T) {
 			connStats := &utils.ConnectionStats{}
-			sph := NewSentPacketHandler(0, 1200, utils.NewRTTStats(), connStats, true, false, nil, protocol.PerspectiveClient, nil, utils.DefaultLogger, false)
+			sph := NewSentPacketHandler(0, 1200, utils.NewRTTStats(), connStats, true, false, nil, protocol.PerspectiveClient, nil, utils.DefaultLogger, Congestion{})
 
 			var packets packetTracker
 			start := monotime.Now()
@@ -2165,7 +2165,7 @@ func TestSentPacketHandlerSpuriousLossOfBurst(t *testing.T) {
 func TestSentPacketHandlerBBR(t *testing.T) {
 	var connStats utils.ConnectionStats
 	rttStats := utils.NewRTTStats()
-	sph := NewSentPacketHandler(0, 1200, rttStats, &connStats, false, false, nil, protocol.PerspectiveClient, nil, utils.DefaultLogger, true)
+	sph := NewSentPacketHandler(0, 1200, rttStats, &connStats, false, false, nil, protocol.PerspectiveClient, nil, utils.DefaultLogger, Congestion{BBR: true})
 	h := sph.(*sentPacketHandler)
 	require.NotNil(t, h.congestionEx)
 	require.True(t, sph.(*sentPacketHandler).congestion.InSlowStart())
@@ -2192,4 +2192,43 @@ func TestSentPacketHandlerBBR(t *testing.T) {
 	require.Empty(t, h.ackedInfo)
 	require.Empty(t, h.lostInfo)
 	require.Zero(t, h.bytesInFlight)
+}
+
+// TestSentPacketHandlerNoPacing: with Congestion.NoPacing a burst sent at
+// one instant stops only at the congestion window (SendAck), never at the
+// pacer, and TimeUntilSend is now; with pacing BBR and NewReno stop at
+// their pacing rate first (quic.Config.DisablePacing).
+func TestSentPacketHandlerNoPacing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cc   Congestion
+		want SendMode
+	}{
+		{"reno", Congestion{}, SendPacingLimited},
+		{"reno/no-pacing", Congestion{NoPacing: true}, SendAck},
+		{"bbr", Congestion{BBR: true}, SendPacingLimited},
+		{"bbr/no-pacing", Congestion{BBR: true, NoPacing: true}, SendAck},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rttStats := utils.NewRTTStats()
+			rttStats.UpdateRTT(100*time.Millisecond, 0)
+			sph := NewSentPacketHandler(0, 1200, rttStats, &utils.ConnectionStats{}, true, false, nil, protocol.PerspectiveClient, nil, utils.DefaultLogger, tc.cc)
+			sph.DropPackets(protocol.EncryptionInitial, monotime.Now())
+			sph.DropPackets(protocol.EncryptionHandshake, monotime.Now())
+			var packets packetTracker
+			now := monotime.Now()
+			sent := 0
+			for sph.SendMode(now) == SendAny && sent < 10000 {
+				pn := sph.PopPacketNumber(protocol.PacketNumberSpaceAppData)
+				sph.SentPacket(now, pn, protocol.InvalidPacketNumber, nil, []Frame{packets.NewPingFrame(pn)}, protocol.Encryption1RTT, protocol.ECNNon, 1200, false, false)
+				sent++
+			}
+			require.Equal(t, tc.want, sph.SendMode(now), "after %d packets", sent)
+			if tc.cc.NoPacing {
+				require.Zero(t, sph.TimeUntilSend())
+			} else {
+				require.True(t, sph.TimeUntilSend().After(now))
+			}
+		})
+	}
 }

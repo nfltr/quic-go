@@ -264,7 +264,7 @@ func openConnected(c *sconn, remote net.Addr) (*connectedSock, error) {
 		_ = pc.Close()
 		return nil, errors.New("not a UDP socket")
 	}
-	rc, err := wrapConn(conn) // buffers, DF, ECN and packet info as the shared socket
+	rc, err := wrapConn(conn, shared.opts) // buffers, DF, ECN, packet info, GSO and GRO as the shared socket
 	if err != nil {
 		_ = conn.Close()
 		return nil, err

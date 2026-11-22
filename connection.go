@@ -328,7 +328,7 @@ var newConnection = func(
 		s.perspective,
 		s.qlogger,
 		s.logger,
-		s.config.CongestionControl == CongestionControlBBR,
+		ackhandler.Congestion{BBR: s.config.CongestionControl == CongestionControlBBR, NoPacing: s.config.DisablePacing},
 	)
 	s.maxPayloadSizeEstimate.Store(uint32(estimateMaxPayloadSize(s.config.initialPacketSize())))
 	statelessResetToken := statelessResetter.GetStatelessResetToken(srcConnID)
@@ -473,7 +473,7 @@ var newClientConnection = func(
 		s.perspective,
 		s.qlogger,
 		s.logger,
-		s.config.CongestionControl == CongestionControlBBR,
+		ackhandler.Congestion{BBR: s.config.CongestionControl == CongestionControlBBR, NoPacing: s.config.DisablePacing},
 	)
 	s.maxPayloadSizeEstimate.Store(uint32(estimateMaxPayloadSize(s.config.initialPacketSize())))
 	oneRTTStream := newCryptoStream()
@@ -2560,10 +2560,11 @@ func (c *Conn) applyTransportParameters() {
 }
 
 func (c *Conn) maxMTU() protocol.ByteCount {
+	largest := c.config.maxPacketSize()
 	if c.peerParams == nil || c.peerParams.MaxUDPPayloadSize <= 0 {
-		return protocol.MaxPacketBufferSize
+		return largest
 	}
-	return min(protocol.MaxPacketBufferSize, c.peerParams.MaxUDPPayloadSize)
+	return min(largest, c.peerParams.MaxUDPPayloadSize)
 }
 
 func (c *Conn) triggerSending(now monotime.Time) error {

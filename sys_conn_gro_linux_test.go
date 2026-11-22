@@ -61,7 +61,7 @@ func appendCmsgInt(b []byte, level, typ int32, v int) []byte {
 // with its buffer's ECN mark; a message without the control message is
 // one datagram.
 func TestGROSplitsACoalescedBuffer(t *testing.T) {
-	c, err := newConn(newUDPConnLocalhost(t), true)
+	c, err := newConn(newUDPConnLocalhost(t), true, sockOpts{})
 	require.NoError(t, err)
 	if !c.capabilities().GRO {
 		t.Skip("no UDP_GRO on this kernel")
@@ -104,7 +104,7 @@ func (c *countingBatchConn) ReadBatch(ms []ipv4.Message, flags int) (int, error)
 // GSO sendmsg from a socket of its own to addr, and returns their bytes.
 func gsoBatch(t *testing.T, addr net.Addr, segs, seg, last int) [][]byte {
 	t.Helper()
-	conn, err := newConn(newUDPConnLocalhost(t), true)
+	conn, err := newConn(newUDPConnLocalhost(t), true, sockOpts{})
 	require.NoError(t, err)
 	require.True(t, conn.capabilities().GSO)
 	var all []byte
@@ -130,7 +130,7 @@ func TestGROReceivesAGSOBatch(t *testing.T) {
 	segs := int(protocol.MaxLargePacketBufferSize / protocol.MaxPacketBufferSize)
 	require.Equal(t, 44, segs)
 	udpConn := newUDPConnLocalhost(t)
-	c, err := newConn(udpConn, true)
+	c, err := newConn(udpConn, true, sockOpts{})
 	require.NoError(t, err)
 	if !c.capabilities().GRO {
 		t.Skip("no UDP_GRO on this kernel")
@@ -147,12 +147,11 @@ func TestGROReceivesAGSOBatch(t *testing.T) {
 	require.Less(t, cb.msgs, segs)
 }
 
-// TestGRODisabledByEnv: QUIC_GO_DISABLE_GRO reads one datagram per
-// message, as without GRO; the batch still arrives whole and in order.
-func TestGRODisabledByEnv(t *testing.T) {
-	t.Setenv("QUIC_GO_DISABLE_GRO", "true")
+// TestGRODisabled: Transport.DisableGRO reads one datagram per message,
+// as without GRO; the batch still arrives whole and in order.
+func TestGRODisabled(t *testing.T) {
 	udpConn := newUDPConnLocalhost(t)
-	c, err := newConn(udpConn, true)
+	c, err := newConn(udpConn, true, sockOpts{noGRO: true})
 	require.NoError(t, err)
 	require.False(t, c.capabilities().GRO)
 	want := gsoBatch(t, udpConn.LocalAddr(), 10, 1000, 10)
@@ -196,11 +195,8 @@ func TestGROCutsOversizedDatagrams(t *testing.T) {
 	big := bytes.Repeat([]byte("0123456789"), 900) // 9000 bytes
 	for _, gro := range []bool{true, false} {
 		t.Run(map[bool]string{true: "gro", false: "no-gro"}[gro], func(t *testing.T) {
-			if !gro {
-				t.Setenv("QUIC_GO_DISABLE_GRO", "true")
-			}
 			udpConn := newUDPConnLocalhost(t)
-			c, err := newConn(udpConn, true)
+			c, err := newConn(udpConn, true, sockOpts{noGRO: !gro})
 			require.NoError(t, err)
 			if gro && !c.capabilities().GRO {
 				t.Skip("no UDP_GRO on this kernel")
@@ -216,7 +212,7 @@ func TestGROCutsOversizedDatagrams(t *testing.T) {
 		})
 	}
 	t.Run("coalesced", func(t *testing.T) {
-		c, err := newConn(newUDPConnLocalhost(t), true)
+		c, err := newConn(newUDPConnLocalhost(t), true, sockOpts{})
 		require.NoError(t, err)
 		if !c.capabilities().GRO {
 			t.Skip("no UDP_GRO on this kernel")

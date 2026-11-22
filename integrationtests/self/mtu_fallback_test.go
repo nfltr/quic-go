@@ -30,8 +30,6 @@ func (c *mtuLimitedUDPConn) WriteMsgUDP(b, oob []byte, addr *net.UDPAddr) (int, 
 }
 
 func TestHandshakePacketSizeFallback(t *testing.T) {
-	// The wrapper limits individual datagrams, not GSO batches.
-	t.Setenv("QUIC_GO_DISABLE_GSO", "true")
 	for _, initialSize := range []uint16{0, protocol.InitialPacketSize} {
 		t.Run(strconv.Itoa(int(initialSize)), func(t *testing.T) {
 			serverUDP := &mtuLimitedUDPConn{UDPConn: newUDPConnLocalhost(t)}
@@ -41,13 +39,18 @@ func TestHandshakePacketSizeFallback(t *testing.T) {
 				InitialPacketSize:       initialSize,
 				DisablePathMTUDiscovery: true,
 			})
-			ln, err := quic.Listen(serverUDP, getTLSConfig(), config)
+			// The wrapper limits individual datagrams, not GSO batches.
+			str := &quic.Transport{Conn: serverUDP, DisableGSO: true}
+			defer str.Close()
+			ln, err := str.Listen(getTLSConfig(), config)
 			require.NoError(t, err)
 			defer ln.Close()
 
 			ctx, cancel := context.WithTimeout(context.Background(), scaleDuration(5*time.Second))
 			defer cancel()
-			client, err := quic.Dial(ctx, clientUDP, ln.Addr(), getTLSClientConfig(), config)
+			tr := &quic.Transport{Conn: clientUDP, DisableGSO: true}
+			defer tr.Close()
+			client, err := tr.Dial(ctx, ln.Addr(), getTLSClientConfig(), config)
 			if initialSize != 0 {
 				require.ErrorContains(t, err, syscall.EMSGSIZE.Error())
 				return

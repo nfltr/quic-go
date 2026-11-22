@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"cmp"
 	"io"
 	"log"
 	"net"
@@ -56,8 +57,14 @@ type OOBCapablePacketConn interface {
 
 var _ OOBCapablePacketConn = &net.UDPConn{}
 
-func wrapConn(pc net.PacketConn) (rawConn, error) {
-	if err := setReceiveBuffer(pc); err != nil {
+// sockOpts are a Transport's socket settings (Transport.sockOpts).
+type sockOpts struct {
+	rcvBuf, sndBuf int  // the buffer sizes to ask for, at least (0: desiredBufferSize)
+	noGSO, noGRO   bool // GSO, GRO off
+}
+
+func wrapConn(pc net.PacketConn, o sockOpts) (rawConn, error) {
+	if err := setReceiveBuffer(pc, cmp.Or(o.rcvBuf, desiredBufferSize)); err != nil {
 		if !strings.Contains(err.Error(), "use of closed network connection") {
 			setBufferWarningOnce.Do(func() {
 				if disable, _ := strconv.ParseBool(os.Getenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING")); disable {
@@ -67,7 +74,7 @@ func wrapConn(pc net.PacketConn) (rawConn, error) {
 			})
 		}
 	}
-	if err := setSendBuffer(pc); err != nil {
+	if err := setSendBuffer(pc, cmp.Or(o.sndBuf, desiredBufferSize)); err != nil {
 		if !strings.Contains(err.Error(), "use of closed network connection") {
 			setBufferWarningOnce.Do(func() {
 				if disable, _ := strconv.ParseBool(os.Getenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING")); disable {
@@ -102,7 +109,7 @@ func wrapConn(pc net.PacketConn) (rawConn, error) {
 		utils.DefaultLogger.Infof("PacketConn is not a net.UDPConn. Disabling optimizations possible on UDP connections.")
 		return &basicConn{PacketConn: pc, supportsDF: supportsDF}, nil
 	}
-	return newConn(c, supportsDF)
+	return newConn(c, supportsDF, o)
 }
 
 // The basicConn is the most trivial implementation of a rawConn.

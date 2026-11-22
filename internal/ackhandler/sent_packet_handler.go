@@ -123,6 +123,7 @@ type sentPacketHandler struct {
 	// congestionEx is congestion when it takes whole ACK and loss events (BBR).
 	congestionEx congestion.SendAlgorithmEx
 	useBBR       bool
+	noPacing     bool // Congestion.NoPacing
 	ackedInfo    []congestion.AckedPacketInfo
 	lostInfo     []congestion.LostPacketInfo
 	rttStats     *utils.RTTStats
@@ -152,6 +153,12 @@ var _ SentPacketHandler = &sentPacketHandler{}
 
 // clientAddressValidated indicates whether the address was validated beforehand by an address validation token.
 // If the address was validated, the amplification limit doesn't apply. It has no effect for a client.
+// Congestion is a connection's congestion controller: BBR (else NewReno),
+// and NoPacing to send what the window allows at once.
+type Congestion struct {
+	BBR, NoPacing bool
+}
+
 func NewSentPacketHandler(
 	initialPN protocol.PacketNumber,
 	initialMaxDatagramSize protocol.ByteCount,
@@ -163,7 +170,7 @@ func NewSentPacketHandler(
 	pers protocol.Perspective,
 	qlogger qlogwriter.Recorder,
 	logger utils.Logger,
-	useBBR bool,
+	cc Congestion,
 ) SentPacketHandler {
 	h := &sentPacketHandler{
 		peerCompletedAddressValidation: pers == protocol.PerspectiveServer,
@@ -183,7 +190,8 @@ func NewSentPacketHandler(
 		lostPackets:        *newLostPacketTracker(),
 		rttStats:           rttStats,
 		connStats:          connStats,
-		useBBR:             useBBR,
+		useBBR:             cc.BBR,
+		noPacing:           cc.NoPacing,
 		ignorePacketsBelow: ignorePacketsBelow,
 		perspective:        pers,
 		qlogger:            qlogger,
@@ -1191,13 +1199,16 @@ func (h *sentPacketHandler) SendMode(now monotime.Time) SendMode {
 		}
 		return SendAck
 	}
-	if !h.congestion.HasPacingBudget(now) {
+	if !h.noPacing && !h.congestion.HasPacingBudget(now) {
 		return SendPacingLimited
 	}
 	return SendAny
 }
 
 func (h *sentPacketHandler) TimeUntilSend() monotime.Time {
+	if h.noPacing {
+		return 0
+	}
 	return h.congestion.TimeUntilSend(h.bytesInFlight)
 }
 

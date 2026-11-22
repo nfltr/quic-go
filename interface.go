@@ -186,6 +186,16 @@ type Config struct {
 	// CongestionControl selects the sender's congestion controller.
 	// The zero value is NewReno (RFC 9002, Section 7).
 	CongestionControl CongestionControl
+	// DisablePacing sends the packets the congestion window allows at
+	// once instead of spacing them at the controller's pacing rate (BBR's
+	// bandwidth estimate, NewReno's window per RTT). Pacing is on by default.
+	DisablePacing bool
+	// MaxPacketSize is the largest UDP payload this side sends: path MTU
+	// discovery stops there (and at the peer's max_udp_payload_size).
+	// 0: 1452 bytes, the size of the fork's packet buffers. Otherwise in
+	// [1200, 1452] and at least InitialPacketSize; Listen and Dial refuse
+	// other values.
+	MaxPacketSize uint16
 	// Enable QUIC datagram support (RFC 9221).
 	EnableDatagrams bool
 	// Enable QUIC Stream Resets with Partial Delivery.

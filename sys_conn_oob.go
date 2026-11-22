@@ -60,6 +60,7 @@ type oobConn struct {
 	groRest []byte
 	groSeg  int
 
+	opts    sockOpts         // its Transport's socket settings (connected sockets take them too)
 	raw     syscall.RawConn  // tryWritePacket's socket
 	family  familyOnce       // its address family (tryWritePacket)
 	deliver connectedDeliver // connected sockets' packets to the transport (darwin)
@@ -67,7 +68,7 @@ type oobConn struct {
 
 var _ rawConn = &oobConn{}
 
-func newConn(c OOBCapablePacketConn, supportsDF bool) (*oobConn, error) {
+func newConn(c OOBCapablePacketConn, supportsDF bool, o sockOpts) (*oobConn, error) {
 	rawConn, err := c.SyscallConn()
 	if err != nil {
 		return nil, err
@@ -140,10 +141,11 @@ func newConn(c OOBCapablePacketConn, supportsDF bool) (*oobConn, error) {
 		raw:                  rawConn,
 		cap: connCapabilities{
 			DF:  supportsDF,
-			GSO: isGSOEnabled(rawConn),
+			GSO: !o.noGSO && isGSOEnabled(rawConn),
 			ECN: isECNEnabled(),
-			GRO: enableGRO(rawConn),
+			GRO: !o.noGRO && enableGRO(rawConn),
 		},
+		opts: o,
 	}
 	for i := range batchSize {
 		oobConn.messages[i].OOB = make([]byte, oobBufferSize)

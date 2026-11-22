@@ -137,6 +137,23 @@ type Transport struct {
 	// The [qlogwriter.Recorder] is closed when the transport is closed.
 	Tracer qlogwriter.Recorder
 
+	// ReceiveBufferSize and SendBufferSize are the socket buffer sizes
+	// (SO_RCVBUF, SO_SNDBUF) the Transport asks the host for when it
+	// wraps Conn: at least this many bytes (a larger buffer the socket
+	// has is kept). 0: SocketBufferWanted. A host may give less (Linux:
+	// net.core.rmem_max, wmem_max); SocketBuffers reports what it gave.
+	// Negative: Listen and Dial fail.
+	ReceiveBufferSize int
+	SendBufferSize    int
+	// DisableGSO sends one datagram per system call instead of a batch
+	// of equal-size packets with UDP_SEGMENT (Linux 5.0+, where GSO is
+	// used when the kernel offers it).
+	DisableGSO bool
+	// DisableGRO reads one datagram per buffer instead of a flow's
+	// datagrams coalesced by UDP_GRO (Linux 5.0+, where GRO is used when
+	// the kernel offers it).
+	DisableGRO bool
+
 	mutex       sync.Mutex
 	handlers    map[protocol.ConnectionID]packetHandler
 	resetTokens map[protocol.StatelessResetToken]packetHandler
@@ -374,6 +391,15 @@ func (t *Transport) doDial(
 	}
 }
 
+// sockOpts are the socket settings of t's fields; negative buffer sizes
+// are refused.
+func (t *Transport) sockOpts() (sockOpts, error) {
+	if t.ReceiveBufferSize < 0 || t.SendBufferSize < 0 {
+		return sockOpts{}, fmt.Errorf("quic: Transport.ReceiveBufferSize %d, SendBufferSize %d: want 0 (SocketBufferWanted) or more", t.ReceiveBufferSize, t.SendBufferSize)
+	}
+	return sockOpts{rcvBuf: t.ReceiveBufferSize, sndBuf: t.SendBufferSize, noGSO: t.DisableGSO, noGRO: t.DisableGRO}, nil
+}
+
 func (t *Transport) init(allowZeroLengthConnIDs bool) error {
 	t.initOnce.Do(func() {
 		var conn rawConn
@@ -381,7 +407,10 @@ func (t *Transport) init(allowZeroLengthConnIDs bool) error {
 			conn = c
 		} else {
 			var err error
-			conn, err = wrapConn(t.Conn)
+			var o sockOpts
+			if o, err = t.sockOpts(); err == nil {
+				conn, err = wrapConn(t.Conn, o)
+			}
 			if err != nil {
 				t.initErr = err
 				return

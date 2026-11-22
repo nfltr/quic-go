@@ -3692,3 +3692,37 @@ func testConnectionDatagrams(t *testing.T, enabled bool) {
 	require.NoError(t, err)
 	require.Equal(t, []byte("bar"), d)
 }
+
+// TestConnectionMaxPacketSize: path MTU discovery stops at
+// Config.MaxPacketSize below the peer's max_udp_payload_size (0: 1452).
+func TestConnectionMaxPacketSize(t *testing.T) {
+	for _, tc := range []struct {
+		max  uint16
+		want protocol.ByteCount
+	}{{0, protocol.MaxPacketBufferSize}, {1300, 1300}, {1200, 1200}} {
+		t.Run(fmt.Sprint(tc.max), func(t *testing.T) {
+			mockCtrl := gomock.NewController(t)
+			c := newClientTestConnection(t, mockCtrl, &Config{MaxPacketSize: tc.max}, false, connectionOptHandshakeConfirmed()).conn
+			require.NoError(t, c.handleTransportParameters(&wire.TransportParameters{
+				InitialSourceConnectionID:       c.handshakeDestConnID,
+				OriginalDestinationConnectionID: c.handshakeDestConnID,
+				MaxUDPPayloadSize:               1500,
+			}))
+			c.applyTransportParameters()
+			require.Equal(t, tc.want, c.maxMTU())
+			now := monotime.Now()
+			for range 100 {
+				if !c.mtuDiscoverer.ShouldSendProbe(now) {
+					now = now.Add(time.Hour)
+					if !c.mtuDiscoverer.ShouldSendProbe(now) {
+						break
+					}
+				}
+				ping, size := c.mtuDiscoverer.GetPing(now)
+				require.LessOrEqual(t, size, tc.want)
+				ping.Handler.OnAcked(ping.Frame)
+			}
+			require.LessOrEqual(t, c.mtuDiscoverer.CurrentSize(), tc.want)
+		})
+	}
+}

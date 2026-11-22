@@ -733,3 +733,39 @@ func testTransportReplaceWithClosed(t *testing.T, local bool) {
 		require.Equal(t, int(math.Ceil(math.Log2(float64(numSent)))), received)
 	})
 }
+
+// TestTransportSocketOptions: Transport's buffer sizes are asked of the
+// host and what it gave is reported (SocketBuffers), a negative size is
+// refused, and DisableGSO / DisableGRO turn both off where the kernel has
+// them.
+func TestTransportSocketOptions(t *testing.T) {
+	t.Run("buffers refused are reported", func(t *testing.T) {
+		udp := newUDPConnLocalhost(t)
+		tr := &Transport{Conn: udp, ReceiveBufferSize: 1 << 30, SendBufferSize: 1 << 30}
+		defer tr.Close()
+		ln, err := tr.Listen(&tls.Config{}, nil)
+		require.NoError(t, err)
+		defer ln.Close()
+		r, w, err := SocketBuffers(udp)
+		require.NoError(t, err)
+		require.Less(t, r, 1<<30)
+		require.Less(t, w, 1<<30)
+	})
+	t.Run("negative buffer refused", func(t *testing.T) {
+		for _, tr := range []*Transport{{ReceiveBufferSize: -1}, {SendBufferSize: -1}} {
+			tr.Conn = newUDPConnLocalhost(t)
+			_, err := tr.Listen(&tls.Config{}, nil)
+			require.ErrorContains(t, err, "BufferSize")
+		}
+	})
+	t.Run("gso and gro off", func(t *testing.T) {
+		tr := &Transport{Conn: newUDPConnLocalhost(t), DisableGSO: true, DisableGRO: true}
+		defer tr.Close()
+		ln, err := tr.Listen(&tls.Config{}, nil)
+		require.NoError(t, err)
+		defer ln.Close()
+		c := tr.conn.capabilities()
+		require.False(t, c.GSO)
+		require.False(t, c.GRO)
+	})
+}
