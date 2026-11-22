@@ -40,7 +40,9 @@
 > reordering past it costs no immediate ACKs); an ACK reports first the
 > ranges holding a packet received since the last one, also one the
 > 64-range history dropped, so a path with more holes open than that does
-> not get its late packets resent; on darwin a packet is written inline, in one
+> not get its late packets resent; an ACK costs the packets it
+> acknowledges or declares lost, not the packets in flight (one
+> connection on a 260 ms path holds ~45,000); on darwin a packet is written inline, in one
 > non-blocking sendmsg, when nothing waits in the send queue, instead of
 > waking the queue's goroutine; and on darwin a connection that has sent 64
 packets sends on a socket of its own, bound to the shared socket's port
