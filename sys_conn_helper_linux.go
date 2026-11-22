@@ -130,7 +130,7 @@ func isPermissionError(err error) bool {
 }
 
 func isECNEnabled() bool {
-	return kernelVersionMajor >= 5 && !isECNDisabledUsingEnv()
+	return kernelVersionMajor >= 5
 }
 
 // kernelVersion returns major and minor kernel version numbers, parsed from

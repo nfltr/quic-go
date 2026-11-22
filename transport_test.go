@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"log"
 	"math"
 	"net"
+	"os"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -155,7 +157,6 @@ func TestTransportAndDialConcurrentClose(t *testing.T) {
 }
 
 func TestTransportErrFromConn(t *testing.T) {
-	t.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
 
 	synctest.Test(t, func(t *testing.T) {
 		readErrChan := make(chan error, 2)
@@ -769,5 +770,69 @@ func TestTransportSocketOptions(t *testing.T) {
 		c := tr.conn.capabilities()
 		require.False(t, c.GSO)
 		require.False(t, c.GRO)
+	})
+	t.Run("ecn off", func(t *testing.T) {
+		tr := &Transport{Conn: newUDPConnLocalhost(t), DisableECN: true}
+		defer tr.Close()
+		ln, err := tr.Listen(&tls.Config{}, nil)
+		require.NoError(t, err)
+		defer ln.Close()
+		require.False(t, tr.conn.capabilities().ECN)
+	})
+	t.Run("buffers short of the ask are not logged", func(t *testing.T) {
+		var out bytes.Buffer
+		log.SetOutput(&out)
+		defer log.SetOutput(os.Stderr)
+		udp := newUDPConnLocalhost(t)
+		tr := &Transport{Conn: udp, ReceiveBufferSize: 1 << 30, SendBufferSize: 1 << 30}
+		defer tr.Close()
+		ln, err := tr.Listen(&tls.Config{}, nil)
+		require.NoError(t, err)
+		defer ln.Close()
+		require.Empty(t, out.String())
+	})
+}
+
+// TestTransportMaxPacketSize: Transport.MaxPacketSize sizes the read
+// buffers (0: 1452, at most MaxJumboPacketSize), a Config sending larger
+// packets than its Transport reads is refused, and a single-use
+// Transport reads its Config's.
+func TestTransportMaxPacketSize(t *testing.T) {
+	t.Run("validated", func(t *testing.T) {
+		for _, m := range []uint16{1199, protocol.MaxJumboPacketSize + 1} {
+			tr := &Transport{Conn: newUDPConnLocalhost(t), MaxPacketSize: m}
+			_, err := tr.Listen(&tls.Config{}, nil)
+			require.ErrorContains(t, err, "Transport.MaxPacketSize")
+		}
+	})
+	t.Run("config above transport refused", func(t *testing.T) {
+		tr := &Transport{Conn: newUDPConnLocalhost(t)}
+		defer tr.Close()
+		_, err := tr.Listen(&tls.Config{}, &Config{MaxPacketSize: 1453})
+		require.ErrorContains(t, err, "above its Transport's MaxPacketSize")
+		_, err = tr.Dial(context.Background(), newUDPConnLocalhost(t).LocalAddr(), &tls.Config{}, &Config{MaxPacketSize: 1453})
+		require.ErrorContains(t, err, "above its Transport's MaxPacketSize")
+	})
+	t.Run("read size", func(t *testing.T) {
+		for _, tc := range []struct {
+			tr   *Transport
+			conf *Config
+			want protocol.ByteCount
+		}{
+			{&Transport{}, nil, protocol.MaxPacketBufferSize},
+			{&Transport{MaxPacketSize: 1300}, nil, protocol.MaxPacketBufferSize},
+			{&Transport{MaxPacketSize: protocol.MaxJumboPacketSize}, nil, protocol.MaxJumboPacketSize},
+			{&Transport{MaxPacketSize: protocol.MaxJumboPacketSize}, &Config{MaxPacketSize: 1400}, protocol.MaxJumboPacketSize},
+			{&Transport{isSingleUse: true}, &Config{MaxPacketSize: 4000}, 4000},
+		} {
+			tc.tr.Conn = newUDPConnLocalhost(t)
+			ln, err := tc.tr.Listen(&tls.Config{}, tc.conf)
+			require.NoError(t, err)
+			o, err := tc.tr.sockOpts()
+			require.NoError(t, err)
+			require.Equal(t, tc.want, o.packetSize())
+			ln.Close()
+			tc.tr.Close()
+		}
 	})
 }

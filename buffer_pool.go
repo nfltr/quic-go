@@ -63,13 +63,29 @@ func (b *packetBuffer) putBack() {
 		largeBufferPool.Put(b)
 		return
 	}
+	if cap(b.Data) == protocol.MaxJumboPacketSize {
+		jumboBufferPool.Put(b)
+		return
+	}
 	panic("putPacketBuffer called with packet of wrong size!")
 }
 
-var bufferPool, largeBufferPool sync.Pool
+var bufferPool, largeBufferPool, jumboBufferPool sync.Pool
 
 func getPacketBuffer() *packetBuffer {
 	buf := bufferPool.Get().(*packetBuffer)
+	buf.refCount = 1
+	buf.Data = buf.Data[:0]
+	return buf
+}
+
+// getPacketBufferFor is a buffer for a packet of up to size bytes:
+// getPacketBuffer's up to MaxPacketBufferSize, else MaxJumboPacketSize.
+func getPacketBufferFor(size protocol.ByteCount) *packetBuffer {
+	if size <= protocol.MaxPacketBufferSize {
+		return getPacketBuffer()
+	}
+	buf := jumboBufferPool.Get().(*packetBuffer)
 	buf.refCount = 1
 	buf.Data = buf.Data[:0]
 	return buf
@@ -88,5 +104,8 @@ func init() {
 	}
 	largeBufferPool.New = func() any {
 		return &packetBuffer{Data: make([]byte, 0, protocol.MaxLargePacketBufferSize)}
+	}
+	jumboBufferPool.New = func() any {
+		return &packetBuffer{Data: make([]byte, 0, protocol.MaxJumboPacketSize)}
 	}
 }

@@ -64,8 +64,8 @@ func validateConfig(config *Config) error {
 	if config.CongestionControl > CongestionControlBBR {
 		return fmt.Errorf("invalid CongestionControl %d: want CongestionControlReno or CongestionControlBBR", config.CongestionControl)
 	}
-	if m := config.MaxPacketSize; m != 0 && (m < protocol.MinInitialPacketSize || m > protocol.MaxPacketBufferSize || m < config.InitialPacketSize) {
-		return fmt.Errorf("invalid MaxPacketSize %d: want 0 or [%d, %d], at least InitialPacketSize (%d)", m, protocol.MinInitialPacketSize, protocol.MaxPacketBufferSize, config.InitialPacketSize)
+	if m := config.MaxPacketSize; m != 0 && (m < protocol.MinInitialPacketSize || m > protocol.MaxJumboPacketSize || m < config.InitialPacketSize) {
+		return fmt.Errorf("invalid MaxPacketSize %d: want 0 or [%d, %d], at least InitialPacketSize (%d)", m, protocol.MinInitialPacketSize, protocol.MaxJumboPacketSize, config.InitialPacketSize)
 	}
 	if af := config.AckFrequency; af != nil {
 		if af.ReorderingThreshold < 1 || af.AckElicitingThreshold >= af.ReorderingThreshold {

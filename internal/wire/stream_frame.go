@@ -63,7 +63,7 @@ func ParseStreamFrame(b []byte, typ FrameType, _ protocol.Version) (*StreamFrame
 			frame.Data = make([]byte, dataLen)
 		}
 	} else {
-		frame = GetStreamFrame()
+		frame = GetStreamFrameFor(protocol.ByteCount(dataLen))
 		// The STREAM frame can't be larger than the StreamFrame we obtained from the buffer,
 		// since those StreamFrames have a buffer length of the maximum packet size.
 		if dataLen > uint64(cap(frame.Data)) {
@@ -168,7 +168,7 @@ func (f *StreamFrame) MaybeSplitOffFrame(maxSize protocol.ByteCount, version pro
 		return nil, true
 	}
 
-	new := GetStreamFrame()
+	new := GetStreamFrameFor(protocol.ByteCount(len(f.Data)) - n) // f's buffer after the swap: the rest
 	new.StreamID = f.StreamID
 	new.Offset = f.Offset
 	new.Fin = false

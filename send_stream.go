@@ -498,7 +498,7 @@ func (s *SendStream) popNewStreamFrame(maxDataLen protocol.ByteCount) (_ *wire.S
 		return nextFrame, s.nextFrame != nil || s.dataForWriting != nil
 	}
 
-	f := wire.GetStreamFrame()
+	f := wire.GetStreamFrameFor(min(maxDataLen, protocol.ByteCount(len(s.dataForWriting))))
 	f.Fin = false
 	f.StreamID = s.streamID
 	f.Offset = s.writeOffset

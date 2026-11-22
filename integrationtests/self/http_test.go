@@ -1152,7 +1152,6 @@ func TestHTTPRequestRetryAfterIdleTimeout(t *testing.T) {
 }
 
 func testHTTPRequestRetryAfterIdleTimeout(t *testing.T, onlyCachedConn bool) {
-	t.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/remote-addr", func(w http.ResponseWriter, r *http.Request) {
@@ -1251,7 +1250,6 @@ func TestHTTPRequestAfterGracefulShutdown(t *testing.T) {
 }
 
 func testHTTPRequestAfterGracefulShutdown(t *testing.T, setGetBody bool) {
-	t.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
 
 	ln, err := quic.ListenEarly(
 		newUDPConnLocalhost(t),

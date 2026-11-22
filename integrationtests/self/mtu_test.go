@@ -194,3 +194,77 @@ func TestPathMTUDiscovery(t *testing.T) {
 	// except for at most one MTU probe packet.
 	require.LessOrEqual(t, numPacketsLargerThanDiscoveredMTU, 1)
 }
+
+// TestJumboPackets: on a path with a large MTU (loopback), path MTU
+// discovery reaches Config.MaxPacketSize above 1452 where both ends'
+// Transports read such packets (a probe counts once the peer acked it,
+// so it was read whole), and the bytes arrive intact; a peer with the
+// zero value keeps 1452.
+func TestJumboPackets(t *testing.T) {
+	const jumbo = protocol.MaxJumboPacketSize
+	for _, tc := range []struct {
+		name       string
+		serverSize uint16
+		wantMin    int64
+		wantMax    int64
+	}{
+		{"both jumbo", jumbo, jumbo - 100, jumbo},
+		{"server default", 0, protocol.MaxPacketBufferSize - 20, protocol.MaxPacketBufferSize},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			str := &quic.Transport{Conn: newUDPConnLocalhost(t), MaxPacketSize: tc.serverSize}
+			defer str.Close()
+			ln, err := str.Listen(getTLSConfig(), getQuicConfig(&quic.Config{MaxPacketSize: tc.serverSize}))
+			require.NoError(t, err)
+			defer ln.Close()
+
+			var rec events.Recorder
+			tr := &quic.Transport{Conn: newUDPConnLocalhost(t), MaxPacketSize: jumbo}
+			defer tr.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), scaleDuration(10*time.Second))
+			defer cancel()
+			conn, err := tr.Dial(ctx, ln.Addr(), getTLSClientConfig(), getQuicConfig(&quic.Config{MaxPacketSize: jumbo, Tracer: newTracer(&rec)}))
+			require.NoError(t, err)
+			defer conn.CloseWithError(0, "")
+			mtu := func() int64 {
+				var m int64
+				for _, ev := range rec.Events(qlog.MTUUpdated{}) {
+					m = max(m, int64(ev.(qlog.MTUUpdated).Value))
+				}
+				return m
+			}
+
+			// Path MTU discovery probes every 5 RTTs: write until the
+			// datagrams reach the size the ends allow (or the deadline).
+			chunk := GeneratePRData(1 << 20)
+			got := make(chan []byte, 1)
+			go func() {
+				sconn, err := ln.Accept(ctx)
+				if err != nil {
+					got <- nil
+					return
+				}
+				str, err := sconn.AcceptStream(ctx)
+				if err != nil {
+					got <- nil
+					return
+				}
+				b, _ := io.ReadAll(str)
+				got <- b
+			}()
+			str2, err := conn.OpenStream()
+			require.NoError(t, err)
+			var sent []byte
+			for mtu() < tc.wantMin && ctx.Err() == nil {
+				_, err = str2.Write(chunk)
+				require.NoError(t, err)
+				sent = append(sent, chunk...)
+			}
+			require.NoError(t, str2.Close())
+			require.True(t, bytes.Equal(sent, <-got), "bytes differ")
+			m := mtu()
+			require.GreaterOrEqual(t, m, tc.wantMin)
+			require.LessOrEqual(t, m, tc.wantMax)
+		})
+	}
+}
