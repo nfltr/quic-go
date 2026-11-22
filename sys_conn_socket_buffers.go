@@ -6,9 +6,16 @@ import (
 	"syscall"
 )
 
-// SocketBufferWanted is the receive and send buffer size quic-go asks a
-// socket for.
+// SocketBufferWanted is the receive buffer size quic-go asks a socket
+// for.
 const SocketBufferWanted = desiredBufferSize
+
+// SocketSendBufferWanted is the send buffer size quic-go asks a socket
+// for: what a connection may queue in the host (its qdisc) is a few ms at
+// 1 Gbit/s, as Linux's TCP Small Queues keeps it for TCP (the old
+// tcp_limit_output_bytes, 256 KiB), so the host's AQM (fq_codel's CoDel,
+// target 5 ms) does not drop whole GSO batches (lane FORKLEFT).
+const SocketSendBufferWanted = 256 << 10
 
 // SocketBuffers returns the receive and send buffer sizes the host gave
 // c's socket (SO_RCVBUF, SO_SNDBUF; Linux reports twice what it reserves
