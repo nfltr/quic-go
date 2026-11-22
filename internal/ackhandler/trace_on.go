@@ -23,7 +23,8 @@ import (
 //	Recv    pn, el (ack-eliciting), ce (ECN-CE), t
 //	Imm     an IMMEDIATE_ACK frame
 //	Ignore  pn: IgnoreBelow
-//	Ack     t, oq (only if queued: 0 a frame that rides another one), la (its largest)
+//	Ack     t, oq (only if queued: 0 a frame that rides another one), la (its largest),
+//	        rs (its ranges, [smallest, largest], descending; link spec/TraceAckRanges.tla)
 //
 // Every line also carries q (an ACK queued), alarm (the ACK alarm, -1:
 // none) and lo (the lowest packet the history holds, -1: none).

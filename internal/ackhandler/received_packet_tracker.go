@@ -368,7 +368,11 @@ func (h *appDataReceivedPacketTracker) GetAckFrame(now monotime.Time, onlyIfQueu
 	h.ackAlarm = 0
 	h.ackElicitingPacketsReceivedSinceLastAck = 0
 	if traceOn {
-		h.trace("Ack", "t", now, "oq", onlyIfQueued, "la", ack.LargestAcked())
+		rs := make([][2]int64, len(ack.AckRanges))
+		for i, r := range ack.AckRanges {
+			rs[i] = [2]int64{int64(r.Smallest), int64(r.Largest)}
+		}
+		h.trace("Ack", "t", now, "oq", onlyIfQueued, "la", ack.LargestAcked(), "rs", rs)
 	}
 	return ack
 }
