@@ -11,7 +11,15 @@ import (
 const maxSkippedPackets = 4
 
 type sentPacketHistory struct {
+	// packets holds a slot per packet number from firstPacketNumber,
+	// nil once acknowledged, declared lost or skipped. skip[i] (i a nil
+	// slot) is a distance to a later slot with every slot between nil,
+	// shortened as it is followed (path compression), so walking the
+	// packets costs the packets left, not the slots: with ~45k packets
+	// in flight on a long fat path an ACK walked every slot from the
+	// oldest hole (lane FORKLEFT, BenchmarkAckInFlight).
 	packets          []*packet
+	skip             []uint32
 	pathProbePackets []packetWithPacketNumber
 	skippedPackets   []protocol.PacketNumber
 
@@ -24,6 +32,7 @@ type sentPacketHistory struct {
 func newSentPacketHistory() *sentPacketHistory {
 	return &sentPacketHistory{
 		packets:             make([]*packet, 0, 32),
+		skip:                make([]uint32, 0, 32),
 		skippedPackets:      make([]protocol.PacketNumber, 0, maxSkippedPackets),
 		highestPacketNumber: protocol.InvalidPacketNumber,
 		firstPacketNumber:   protocol.InvalidPacketNumber,
@@ -37,7 +46,10 @@ func (h *sentPacketHistory) checkPacketNumberUse(pn protocol.PacketNumber) {
 		}
 	}
 	if len(h.packets) > 0 {
-		h.packets = append(h.packets, make([]*packet, pn-h.highestPacketNumber-1)...)
+		for range pn - h.highestPacketNumber - 1 {
+			h.packets = append(h.packets, nil)
+			h.skip = append(h.skip, 1)
+		}
 	}
 	h.highestPacketNumber = pn
 	if len(h.packets) == 0 {
@@ -55,6 +67,7 @@ func (h *sentPacketHistory) SkippedPacket(pn protocol.PacketNumber) {
 func (h *sentPacketHistory) SentPacket(pn protocol.PacketNumber, p *packet) {
 	h.checkPacketNumberUse(pn)
 	h.packets = append(h.packets, p)
+	h.skip = append(h.skip, 0)
 	if p.Outstanding() {
 		h.numOutstanding++
 	}
@@ -63,21 +76,55 @@ func (h *sentPacketHistory) SentPacket(pn protocol.PacketNumber, p *packet) {
 func (h *sentPacketHistory) SentPathProbePacket(pn protocol.PacketNumber, p *packet) {
 	h.checkPacketNumberUse(pn)
 	h.packets = append(h.packets, &packet{EncryptionLevel: p.EncryptionLevel, isPathProbePacket: true})
+	h.skip = append(h.skip, 0)
 	h.pathProbePackets = append(h.pathProbePackets, packetWithPacketNumber{PacketNumber: pn, packet: p})
 }
 
+// next returns the first slot from i that holds a packet (len(h.packets)
+// if none).
+func (h *sentPacketHistory) next(i int) int {
+	j := i
+	for j < len(h.packets) && h.packets[j] == nil {
+		j += int(h.skip[j])
+	}
+	for k := i; k < j; { // every slot from i to j is nil: point them at j
+		n := k + int(h.skip[k])
+		h.skip[k] = uint32(j - k)
+		k = n
+	}
+	return j
+}
+
+// clear empties slot idx.
+func (h *sentPacketHistory) clear(idx int) {
+	h.packets[idx] = nil
+	h.skip[idx] = 1
+}
+
+// Packets yields the packets in packet number order. The yield function
+// may remove the packet it gets (Remove, DeclareLost).
 func (h *sentPacketHistory) Packets() iter.Seq2[protocol.PacketNumber, *packet] {
+	return h.PacketsFrom(0)
+}
+
+// PacketsFrom is Packets from packet number pn on.
+func (h *sentPacketHistory) PacketsFrom(pn protocol.PacketNumber) iter.Seq2[protocol.PacketNumber, *packet] {
 	return func(yield func(protocol.PacketNumber, *packet) bool) {
-		// h.firstPacketNumber might be updated in the yield function,
-		// so we need to save it here.
-		firstPacketNumber := h.firstPacketNumber
-		for i, p := range h.packets {
-			if p == nil {
-				continue
-			}
-			if !yield(firstPacketNumber+protocol.PacketNumber(i), p) {
+		for len(h.packets) > 0 {
+			// h.firstPacketNumber moves on when the yield function removes the first packet
+			pn = max(pn, h.firstPacketNumber)
+			idx := int(pn - h.firstPacketNumber)
+			if idx >= len(h.packets) {
 				return
 			}
+			if idx = h.next(idx); idx == len(h.packets) {
+				return
+			}
+			pn = h.firstPacketNumber + protocol.PacketNumber(idx)
+			if !yield(pn, h.packets[idx]) {
+				return
+			}
+			pn++
 		}
 	}
 }
@@ -97,9 +144,9 @@ func (h *sentPacketHistory) FirstOutstanding(space protocol.PacketNumberSpace) (
 	if !h.HasOutstandingPackets() {
 		return protocol.InvalidPacketNumber, nil
 	}
-	for i, p := range h.packets {
-		if p != nil && p.Outstanding() && p.EncryptionLevel.PacketNumberSpace() == space {
-			return h.firstPacketNumber + protocol.PacketNumber(i), p
+	for pn, p := range h.Packets() {
+		if p.Outstanding() && p.EncryptionLevel.PacketNumberSpace() == space {
+			return pn, p
 		}
 	}
 	return protocol.InvalidPacketNumber, nil
@@ -145,17 +192,11 @@ func (h *sentPacketHistory) Remove(pn protocol.PacketNumber) error {
 			panic("negative number of outstanding packets")
 		}
 	}
-	h.packets[idx] = nil
-	// clean up all skipped packets directly before this packet number
-	var hasPacketBefore bool
-	for idx > 0 {
-		idx--
-		if h.packets[idx] != nil {
-			hasPacketBefore = true
-			break
-		}
-	}
-	if !hasPacketBefore {
+	h.clear(idx)
+	// h.packets[0] always holds a packet: only the first one leaves nil
+	// slots at the start (lane FORKLEFT: a walk back to the previous
+	// packet cost every slot acknowledged since the oldest hole)
+	if idx == 0 {
 		h.cleanupStart()
 	}
 	if len(h.packets) > 0 && h.packets[0] == nil {
@@ -214,14 +255,14 @@ func (h *sentPacketHistory) HasOutstandingPathProbes() bool {
 
 // delete all nil entries at the beginning of the packets slice
 func (h *sentPacketHistory) cleanupStart() {
-	for i, p := range h.packets {
-		if p != nil {
-			h.packets = h.packets[i:]
-			h.firstPacketNumber += protocol.PacketNumber(i)
-			return
-		}
+	if i := h.next(0); i < len(h.packets) {
+		h.packets = h.packets[i:]
+		h.skip = h.skip[i:]
+		h.firstPacketNumber += protocol.PacketNumber(i)
+		return
 	}
 	h.packets = h.packets[:0]
+	h.skip = h.skip[:0]
 	h.firstPacketNumber = protocol.InvalidPacketNumber
 }
 
@@ -237,7 +278,7 @@ func (h *sentPacketHistory) DeclareLost(pn protocol.PacketNumber) {
 			panic("negative number of outstanding packets")
 		}
 	}
-	h.packets[idx] = nil
+	h.clear(idx)
 	if idx == 0 {
 		h.cleanupStart()
 	}

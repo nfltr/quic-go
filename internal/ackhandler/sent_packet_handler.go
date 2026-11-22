@@ -686,48 +686,31 @@ func (h *sentPacketHandler) detectAndRemoveAckedPackets(
 		}
 	}
 
-	var ackRangeIndex int
-	lowestAcked := ack.LowestAcked()
-	largestAcked := ack.LargestAcked()
-	for pn, p := range h.hist.Packets() {
-		// ignore packets below the lowest acked
-		if pn < lowestAcked {
-			continue
-		}
-		if pn > largestAcked {
-			break
-		}
-		if p.EncryptionLevel.PacketNumberSpace() != encLevel.PacketNumberSpace() {
-			continue
-		}
-
-		if ack.HasMissingRanges() {
-			ackRange := ack.AckRanges[len(ack.AckRanges)-1-ackRangeIndex]
-
-			for pn > ackRange.Largest && ackRangeIndex < len(ack.AckRanges)-1 {
-				ackRangeIndex++
-				ackRange = ack.AckRanges[len(ack.AckRanges)-1-ackRangeIndex]
+	// each range from the lowest, its packets only: the cost is the
+	// packets acknowledged, not the packets in flight (lane FORKLEFT,
+	// BenchmarkAckInFlight)
+	for i := len(ack.AckRanges) - 1; i >= 0; i-- {
+		r := ack.AckRanges[i]
+		for pn, p := range h.hist.PacketsFrom(r.Smallest) {
+			if pn > r.Largest {
+				break
 			}
-
-			if pn < ackRange.Smallest { // packet not contained in ACK range
+			if p.EncryptionLevel.PacketNumberSpace() != encLevel.PacketNumberSpace() {
 				continue
 			}
-			if pn > ackRange.Largest {
-				return nil, false, fmt.Errorf("BUG: ackhandler would have acked wrong packet %d, while evaluating range %d -> %d", pn, ackRange.Smallest, ackRange.Largest)
+			if p.isPathProbePacket {
+				probePacket := h.hist.RemovePathProbe(pn)
+				// the probe packet might already have been declared lost
+				if probePacket != nil {
+					h.ackedPackets = append(h.ackedPackets, packetWithPacketNumber{PacketNumber: pn, packet: probePacket})
+				}
+				continue
 			}
-		}
-		if p.isPathProbePacket {
-			probePacket := h.hist.RemovePathProbe(pn)
-			// the probe packet might already have been declared lost
-			if probePacket != nil {
-				h.ackedPackets = append(h.ackedPackets, packetWithPacketNumber{PacketNumber: pn, packet: probePacket})
+			if p.IsAckEliciting() {
+				hasAckEliciting = true
 			}
-			continue
+			h.ackedPackets = append(h.ackedPackets, packetWithPacketNumber{PacketNumber: pn, packet: p})
 		}
-		if p.IsAckEliciting() {
-			hasAckEliciting = true
-		}
-		h.ackedPackets = append(h.ackedPackets, packetWithPacketNumber{PacketNumber: pn, packet: p})
 	}
 	if h.logger.Debug() && len(h.ackedPackets) > 0 {
 		pns := make([]protocol.PacketNumber, len(h.ackedPackets))
@@ -1026,6 +1009,11 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 				h.logger.Debugf("\tsetting loss timer for packet %d (%s) to %s (in %s)", pn, encLevel, lossDelay, lossTime)
 			}
 			pnSpace.lossTime = lossTime
+			// Send time and distance fall with the packet number, so the
+			// lost packets come first: none from here on (lane FORKLEFT:
+			// the walk went on through every packet below the largest
+			// acknowledged).
+			break
 		}
 		if packetLost {
 			if p.Outstanding() && space == protocol.PacketNumberSpaceAppData {
