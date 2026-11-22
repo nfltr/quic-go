@@ -21,8 +21,27 @@ import (
 // congestion window's cap of 10,000 packets (12.8 MB of these 1280-byte
 // packets) held one connection at 0.37 Gbit/s here and 0.35 on the real
 // path, however large the windows; at 65,536 packets the stream windows'
-// auto-tuning is the limit, as it should be.
+// auto-tuning is the limit, as it should be. burst-loss: the same path
+// with a 10 ms queue, 30 % of packets up to 10 places late and 0.02 %
+// lost: BBR's startup overflows the queue and drops thousands of packets
+// at once, and the receiver's 1000-gap limit closed the connection ("too
+// many gaps in received data": the direct path lost, Helsinki ->
+// Singapore); it must deliver every byte.
 func TestBulkUploadOnLongFatPath(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		queue        time.Duration
+		reorder, min float64
+		loss         float64
+	}{
+		{"clean", 200 * time.Millisecond, 0, 0.7, 0},
+		{"burst-loss", 10 * time.Millisecond, 0.3, 0.2, 0.0002},
+	} {
+		t.Run(c.name, func(t *testing.T) { testBulkUploadLongFat(t, c.queue, c.reorder, c.loss, c.min) })
+	}
+}
+
+func testBulkUploadLongFat(t *testing.T, queue time.Duration, reorder, loss, min float64) {
 	synctest.Test(t, func(t *testing.T) {
 		const rate = 1e9
 		const rtt = 260 * time.Millisecond
@@ -30,7 +49,7 @@ func TestBulkUploadOnLongFatPath(t *testing.T) {
 		const window = 16 << 20
 		addrClient := &net.UDPAddr{IP: net.ParseIP("1.0.0.1"), Port: 9001}
 		addrServer := &net.UDPAddr{IP: net.ParseIP("1.0.0.2"), Port: 9002}
-		router := &reorderRouter{to: addrServer, rate: rate, queue: 200 * time.Millisecond, maxLate: 10, rng: rand.New(rand.NewPCG(1, 2))}
+		router := &reorderRouter{to: addrServer, rate: rate, queue: queue, maxLate: 10, reorder: reorder, loss: loss, rng: rand.New(rand.NewPCG(1, 2))}
 		n := &simnet.Simnet{Router: router}
 		settings := simnet.NodeBiDiLinkSettings{Latency: rtt / 2}
 		clientConn := n.NewEndpoint(addrClient, settings)
@@ -74,6 +93,8 @@ func TestBulkUploadOnLongFatPath(t *testing.T) {
 					break
 				}
 				if err != nil {
+					t.Errorf("read after %d bytes: %v", got, err)
+					close(done)
 					return
 				}
 			}
@@ -88,15 +109,19 @@ func TestBulkUploadOnLongFatPath(t *testing.T) {
 		require.NoError(t, err)
 		chunk := make([]byte, 1<<20)
 		for range size / len(chunk) {
-			_, err := str.Write(chunk)
-			require.NoError(t, err)
+			if _, err := str.Write(chunk); err != nil {
+				break
+			}
 		}
-		require.NoError(t, str.Close())
-		m := <-done
+		_ = str.Close()
+		m, ok := <-done
+		if !ok {
+			return
+		}
 		got := float64(size/2*8) / m.end.Sub(m.half).Seconds()
 		cwnd := conn.ConnectionStats().CongestionWindow
 		t.Logf("second half at %.1f Mbit/s (%.0f%%), %.1f MB in flight; congestion window %.1f MB", got/1e6, 100*got/rate, got/8*rtt.Seconds()/1e6, float64(cwnd)/1e6)
-		t.Logf("BenchmarkLongFatPath 1 %.1f Mbit/s", got/1e6)
-		require.GreaterOrEqual(t, got, 0.7*rate)
+		t.Logf("BenchmarkLongFatPath/%s 1 %.1f Mbit/s", t.Name(), got/1e6)
+		require.GreaterOrEqual(t, got, min*rate)
 	})
 }
