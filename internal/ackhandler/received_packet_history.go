@@ -39,6 +39,11 @@ func (h *receivedPacketHistory) ReceivedPacket(p protocol.PacketNumber) bool /* 
 	// Delete old ranges, if we're tracking too many of them.
 	// This is a DoS defense against a peer that sends us too many gaps.
 	if len(h.ranges) > protocol.MaxNumAckRanges {
+		if traceOn {
+			for _, r := range h.ranges[:len(h.ranges)-protocol.MaxNumAckRanges] {
+				TraceDrop("evict", r.End)
+			}
+		}
 		h.ranges = slices.Delete(h.ranges, 0, len(h.ranges)-protocol.MaxNumAckRanges)
 	}
 	return isNew
