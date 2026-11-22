@@ -78,8 +78,14 @@ const MaxTrackedSentPackets = MaxOutstandingSentPackets * 5 / 4
 const MaxNonAckElicitingAcks = 19
 
 // MaxStreamFrameSorterGaps is the maximum number of gaps between received StreamFrames
-// prevents DoS attacks against the streamFrameSorter
-const MaxStreamFrameSorterGaps = 1000
+// prevents DoS attacks against the streamFrameSorter.
+// One per packet a sender may have in flight: each gap is a lost or late
+// packet. Upstream's 1000 closed a connection whose congestion window held
+// 45,000 packets at a loss burst ("too many gaps in received data", lane
+// LONGFAT, guard TestBulkUploadOnLongFatPath/burst-loss). A gap sits
+// between two queued frames, so the gaps cost no more than the frames the
+// receive window already lets a peer queue.
+const MaxStreamFrameSorterGaps = MaxCongestionWindowPackets
 
 // MinStreamFrameBufferSize is the minimum data length of a received STREAM frame
 // that we use the buffer for. This protects against a DoS where an attacker would send us
