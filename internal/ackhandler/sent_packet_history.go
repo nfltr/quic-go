@@ -17,7 +17,7 @@ type sentPacketHistory struct {
 	// shortened as it is followed (path compression), so walking the
 	// packets costs the packets left, not the slots: with ~45k packets
 	// in flight on a long fat path an ACK walked every slot from the
-	// oldest hole (lane FORKLEFT, BenchmarkAckInFlight).
+	// oldest hole (lane FORKLEFT; guard TestAckCostIndependentOfInFlight).
 	packets          []*packet
 	skip             []uint32
 	pathProbePackets []packetWithPacketNumber

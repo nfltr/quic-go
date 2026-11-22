@@ -688,7 +688,7 @@ func (h *sentPacketHandler) detectAndRemoveAckedPackets(
 
 	// each range from the lowest, its packets only: the cost is the
 	// packets acknowledged, not the packets in flight (lane FORKLEFT,
-	// BenchmarkAckInFlight)
+	// guard TestAckCostIndependentOfInFlight)
 	for i := len(ack.AckRanges) - 1; i >= 0; i-- {
 		r := ack.AckRanges[i]
 		for pn, p := range h.hist.PacketsFrom(r.Smallest) {
@@ -1009,10 +1009,11 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 				h.logger.Debugf("\tsetting loss timer for packet %d (%s) to %s (in %s)", pn, encLevel, lossDelay, lossTime)
 			}
 			pnSpace.lossTime = lossTime
-			// Send time and distance fall with the packet number, so the
-			// lost packets come first: none from here on (lane FORKLEFT:
-			// the walk went on through every packet below the largest
-			// acknowledged).
+			// A packet's age and distance fall as its number rises, so
+			// the lost packets come first: none from here on (lane
+			// FORKLEFT: the walk went on through every packet below the
+			// largest acknowledged; guard
+			// TestDetectLostPacketsLeavesNoLostPacket).
 			break
 		}
 		if packetLost {
