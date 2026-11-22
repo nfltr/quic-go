@@ -1,7 +1,9 @@
 package ackhandler
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/nfltr/quic-go/internal/monotime"
@@ -19,6 +21,12 @@ type receivedPacketTracker struct {
 
 	lastAck   *wire.AckFrame
 	hasNewAck bool // true as soon as we received an ack-eliciting new packet
+
+	// fresh are the packets received since the last ACK (the newest
+	// MaxNumAckRanges), which the next ACK reports even if the history
+	// dropped their range (appendAckRanges); scratch is its buffer.
+	fresh   []protocol.PacketNumber
+	scratch []interval
 }
 
 func newReceivedPacketTracker() *receivedPacketTracker {
@@ -29,6 +37,10 @@ func (h *receivedPacketTracker) ReceivedPacket(pn protocol.PacketNumber, ecn pro
 	if isNew := h.packetHistory.ReceivedPacket(pn); !isNew {
 		return fmt.Errorf("receivedPacketTracker BUG: ReceivedPacket called for old / duplicate packet %d", pn)
 	}
+	if len(h.fresh) == protocol.MaxNumAckRanges {
+		h.fresh = h.fresh[:copy(h.fresh, h.fresh[1:])]
+	}
+	h.fresh = append(h.fresh, pn)
 
 	//nolint:exhaustive // Only need to count ECT(0), ECT(1) and ECN-CE.
 	switch ecn {
@@ -60,13 +72,78 @@ func (h *receivedPacketTracker) GetAckFrame() *wire.AckFrame {
 	ack.ECT0 = h.ect0
 	ack.ECT1 = h.ect1
 	ack.ECNCE = h.ecnce
-	for r := range h.packetHistory.Backward() {
-		ack.AckRanges = append(ack.AckRanges, wire.AckRange{Smallest: r.Start, Largest: r.End})
-	}
+	h.appendAckRanges(ack)
 
 	h.lastAck = ack
 	h.hasNewAck = false
+	h.fresh = h.fresh[:0]
 	return ack
+}
+
+// appendAckRanges fills an ACK's ranges: the history's, unless a packet
+// received since the last ACK is not in it (past MaxNumAckRanges ranges it
+// drops the lowest, also a late packet's new lowest one at once). Then the
+// ranges holding such a packet go first (one the history dropped is its
+// own), then the highest others, MaxNumAckRanges in all, in descending
+// order: every packet received is acknowledged once, and an ACK may leave
+// out a range it acknowledged before (RFC 2018 section 4, RFC 9000 13.2.3;
+// github.com/nfltr/link spec/AckRanges.tla ReportedOnce,
+// TestReceivedPacketTrackerReportedOnce). Without it the peer declared
+// such a packet lost by its time threshold and resent it: 1.2-4.6 % of a
+// bulk transfer's packets on a path delivering half of them hundreds of
+// places late (lane SPURIOUS).
+func (h *receivedPacketTracker) appendAckRanges(ack *wire.AckFrame) {
+	hist := h.packetHistory.ranges // ascending
+	orphans := false
+	for _, pn := range h.fresh {
+		if _, ok := h.packetHistory.find(pn); !ok {
+			orphans = true
+			break
+		}
+	}
+	if !orphans {
+		for r := range h.packetHistory.Backward() {
+			ack.AckRanges = append(ack.AckRanges, wire.AckRange{Smallest: r.Start, Largest: r.End})
+		}
+		return
+	}
+	// required: the history's ranges holding a fresh packet, and each
+	// fresh packet it does not hold; then the highest others.
+	req := h.scratch[:0]
+	held := make([]bool, len(hist))
+	for _, pn := range h.fresh {
+		if i, ok := h.packetHistory.find(pn); ok {
+			held[i] = true
+		} else {
+			req = append(req, interval{Start: pn, End: pn})
+		}
+	}
+	for i, r := range hist {
+		if held[i] {
+			req = append(req, r)
+		}
+	}
+	room := protocol.MaxNumAckRanges - len(req)
+	for i := len(hist) - 1; i >= 0 && room > 0; i-- {
+		if !held[i] {
+			req = append(req, hist[i])
+			room--
+		}
+	}
+	slices.SortFunc(req, func(a, b interval) int { return cmp.Compare(b.Start, a.Start) })
+	n := 0 // merge adjacent ones (a dropped packet next to a range)
+	for _, r := range req {
+		if n > 0 && r.End+1 >= req[n-1].Start {
+			req[n-1].Start = min(req[n-1].Start, r.Start)
+			continue
+		}
+		req[n] = r
+		n++
+	}
+	for _, r := range req[:min(n, protocol.MaxNumAckRanges)] {
+		ack.AckRanges = append(ack.AckRanges, wire.AckRange{Smallest: r.Start, Largest: r.End})
+	}
+	h.scratch = req[:0]
 }
 
 func (h *receivedPacketTracker) IsPotentiallyDuplicate(pn protocol.PacketNumber) bool {

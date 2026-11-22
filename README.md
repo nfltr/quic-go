@@ -37,7 +37,10 @@
 > reordering within its threshold forces no ACK; the sender's packet
 > threshold is that reordering threshold, and once a spurious loss turns
 > that threshold off it asks again for Reordering Threshold 0, so a path
-> reordering past it costs no immediate ACKs); on darwin a packet is written inline, in one
+> reordering past it costs no immediate ACKs); an ACK reports first the
+> ranges holding a packet received since the last one, also one the
+> 64-range history dropped, so a path with more holes open than that does
+> not get its late packets resent; on darwin a packet is written inline, in one
 > non-blocking sendmsg, when nothing waits in the send queue, instead of
 > waking the queue's goroutine; and on darwin a connection that has sent 64
 packets sends on a socket of its own, bound to the shared socket's port
