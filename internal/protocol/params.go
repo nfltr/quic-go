@@ -6,7 +6,14 @@ import "time"
 const InitialPacketSize = 1280
 
 // MaxCongestionWindowPackets is the maximum congestion window in packet.
-const MaxCongestionWindowPackets = 10000
+// 65,536 packets (95 MB at 1452 bytes) carry 2.5 Gbit/s at 300 ms RTT;
+// upstream's 10,000 (14.5 MB) held one connection at 0.35 Gbit/s on a
+// 260 ms path however large the flow-control windows (lane LONGFAT, guard
+// TestBulkUploadOnLongFatPath). The cap only bounds: what is in flight is
+// what the congestion controller and the peer's windows allow, and a
+// sender keeps each packet's frames until it is acknowledged, so its
+// memory follows what is in flight.
+const MaxCongestionWindowPackets = 65536
 
 // MaxUndecryptablePackets limits the number of undecryptable packets that are queued in the connection.
 const MaxUndecryptablePackets = 32
